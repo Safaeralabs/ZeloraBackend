@@ -1,0 +1,42 @@
+# ─── Vendly Celery Worker — Production Dockerfile ──────────────────────────────
+# Same base as the API image; only the CMD differs.
+# Used for both celery worker and celery beat services in docker-compose.
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# ─── System dependencies ────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ─── Python dependencies ────────────────────────────────────────────────────────
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+# ─── Application code ──────────────────────────────────────────────────────────
+COPY . .
+
+# ─── Non-root user ─────────────────────────────────────────────────────────────
+RUN addgroup --system vendly && adduser --system --ingroup vendly vendly
+RUN chown -R vendly:vendly /app
+USER vendly
+
+RUN mkdir -p /app/logs
+
+# ─── Default: Celery worker with all queues ────────────────────────────────────
+CMD ["celery", \
+     "-A", "tasks.celery_app", \
+     "worker", \
+     "--loglevel=info", \
+     "--concurrency=4", \
+     "-Q", "default,ai,channels,campaigns", \
+     "--hostname=vendly-worker@%h"]
