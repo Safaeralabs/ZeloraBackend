@@ -24,7 +24,7 @@ from django.conf.urls.static import static
 from django.http import JsonResponse
 from drf_spectacular.views import (
     SpectacularAPIView,
-    SpectacularSwaggerUIView,
+    SpectacularSwaggerView,
     SpectacularRedocView,
 )
 
@@ -57,7 +57,7 @@ urlpatterns = [
 
     # ── OpenAPI / Swagger ──────────────────────────────────────────────────────
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', SpectacularSwaggerUIView.as_view(url_name='schema'), name='swagger-ui'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
 
     # ── Application APIs ───────────────────────────────────────────────────────

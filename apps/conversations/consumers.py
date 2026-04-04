@@ -2,7 +2,7 @@
 Vendly — InboxConsumer (Django Channels WebSocket)
 
 Handles real-time inbox updates for agents:
-  - Authenticates via JWT token in query params (?token=<access_token>)
+  - Authenticates via JWT token in WebSocket subprotocol
   - Joins org-specific group: "org_{org_id}"
   - Joins user-specific group: "user_{user_id}"
   - Broadcasts: new_message, status_changed, agent_typing events
@@ -14,33 +14,15 @@ import structlog
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from apps.channels_config.public_session import validate_public_appchat_session_token
 
 logger = structlog.get_logger(__name__)
 
 
-@database_sync_to_async
-def _authenticate_token(token: str):
-    """Validate JWT token, return (user, org_id) or (None, None)."""
-    try:
-        from rest_framework_simplejwt.tokens import UntypedToken
-        from rest_framework_simplejwt.settings import api_settings
-        from django.contrib.auth import get_user_model
-        from django.conf import settings
-        import jwt as pyjwt
-
-        UntypedToken(token)  # Raises if invalid/expired
-        decoded = pyjwt.decode(token, settings.SECRET_KEY, algorithms=[api_settings.ALGORITHM])
-        user_id = decoded.get(api_settings.USER_ID_CLAIM)
-        if not user_id:
-            return None, None
-
-        User = get_user_model()
-        user = User.objects.select_related('organization').get(pk=user_id, is_active=True)
-        org_id = str(user.organization_id) if user.organization_id else None
-        return user, org_id
-
-    except Exception:
-        return None, None
+def build_public_appchat_group(org_slug: str, session_id: str) -> str:
+    normalized_org = ''.join(char if char.isalnum() else '-' for char in (org_slug or '').lower())
+    normalized_session = ''.join(char if char.isalnum() else '-' for char in (session_id or '').lower())
+    return f'appchat-{normalized_org}-{normalized_session}'[:100]
 
 
 class InboxConsumer(AsyncWebsocketConsumer):
@@ -66,32 +48,19 @@ class InboxConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
         # ── 1. Extract JWT from query params ──────────────────────────────────
-        query_string = self.scope.get('query_string', b'').decode()
-        params = parse_qs(query_string)
-        token_list = params.get('token', [])
+        user = self.scope.get('user')
+        if not user or user.is_anonymous:
+            logger.warning('ws_auth_missing_token', path=self.scope.get('path'))
+            await self.close(code=4001)
+            return
 
-        if not token_list:
-            # Also check scope user set by JWTAuthMiddleware
-            user = self.scope.get('user')
-            if user and not user.is_anonymous:
-                org_id = str(user.organization_id) if user.organization_id else None
-                if not org_id:
-                    await self.close(code=4002)
-                    return
-                self.user = user
-                self.org_id = org_id
-            else:
-                logger.warning('ws_auth_missing_token', path=self.scope.get('path'))
-                await self.close(code=4001)
-                return
-        else:
-            user, org_id = await _authenticate_token(token_list[0])
-            if user is None or org_id is None:
-                logger.warning('ws_auth_invalid_token', path=self.scope.get('path'))
-                await self.close(code=4001)
-                return
-            self.user = user
-            self.org_id = org_id
+        org_id = str(user.organization_id) if user.organization_id else None
+        if not org_id:
+            await self.close(code=4002)
+            return
+
+        self.user = user
+        self.org_id = org_id
 
         # ── 2. Set up channel groups ───────────────────────────────────────────
         self.org_group = f'org_{self.org_id}'
@@ -100,7 +69,7 @@ class InboxConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.org_group, self.channel_name)
         await self.channel_layer.group_add(self.user_group, self.channel_name)
 
-        await self.accept()
+        await self.accept(subprotocol='vendly-ws')
 
         # ── 3. Send welcome event with agent info ──────────────────────────────
         await self.send(text_data=json.dumps({
@@ -124,11 +93,9 @@ class InboxConsumer(AsyncWebsocketConsumer):
         if hasattr(self, 'user_group'):
             await self.channel_layer.group_discard(self.user_group, self.channel_name)
 
-        logger.info(
-            'ws_disconnected',
-            user_id=str(getattr(self, 'user', {}).id or 'unknown'),
-            close_code=close_code,
-        )
+        user = getattr(self, 'user', None)
+        user_id = getattr(user, 'id', 'unknown')
+        logger.info('ws_disconnected', user_id=str(user_id or 'unknown'), close_code=close_code)
 
     async def receive(self, text_data):
         """Handle messages from the WebSocket client."""
@@ -220,4 +187,77 @@ class InboxConsumer(AsyncWebsocketConsumer):
             'message': event.get('message'),
             'level': event.get('level', 'info'),
             'data': event.get('data', {}),
+        }))
+
+
+@database_sync_to_async
+def _resolve_public_appchat_scope(org_slug: str):
+    from apps.channels_config.models import ChannelConfig
+
+    config = ChannelConfig.objects.select_related('organization').filter(
+        organization__slug=org_slug,
+        organization__is_active=True,
+        channel='app',
+        is_active=True,
+    ).first()
+    if config is None:
+        return None
+    return {
+        'organization_id': str(config.organization_id),
+        'organization_slug': config.organization.slug,
+    }
+
+
+class PublicAppChatConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        route_kwargs = self.scope.get('url_route', {}).get('kwargs', {})
+        query_string = self.scope.get('query_string', b'').decode()
+        params = parse_qs(query_string)
+        requested_org_slug = route_kwargs.get('org_slug', '')
+        session_id = route_kwargs.get('session_id', '')
+        session_token = (params.get('session_token', ['']) or [''])[0]
+
+        if not requested_org_slug or not session_id:
+            await self.close(code=4004)
+            return
+        if not validate_public_appchat_session_token(requested_org_slug, session_id, session_token):
+            await self.close(code=4003)
+            return
+
+        resolved_scope = await _resolve_public_appchat_scope(requested_org_slug)
+        if resolved_scope is None:
+            await self.close(code=4004)
+            return
+
+        self.organization_id = resolved_scope['organization_id']
+        self.organization_slug = resolved_scope['organization_slug']
+        self.session_id = session_id
+        self.public_group = build_public_appchat_group(self.organization_slug, self.session_id)
+
+        await self.channel_layer.group_add(self.public_group, self.channel_name)
+        await self.accept()
+        await self.send(text_data=json.dumps({
+            'type': 'connected',
+            'session_id': self.session_id,
+            'organization_slug': self.organization_slug,
+        }))
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'public_group'):
+            await self.channel_layer.group_discard(self.public_group, self.channel_name)
+
+    async def receive(self, text_data):
+        try:
+            data = json.loads(text_data)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if data.get('type') == 'ping':
+            await self.send(text_data=json.dumps({'type': 'pong'}))
+
+    async def appchat_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'new_message',
+            'conversation_id': event.get('conversation_id'),
+            'session_id': event.get('session_id'),
+            'message': event.get('message', {}),
         }))

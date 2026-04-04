@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Local Windows/Python 3.14 compatibility overrides for MVP development.
+# PostgreSQL is disabled locally via USE_SQLITE=True, so psycopg2 is not required.
+Pillow>=11.2.1

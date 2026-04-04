@@ -292,12 +292,16 @@ def process_kb_document(self, doc_id: str) -> dict:
     try:
         from apps.knowledge_base.models import KBDocument
         from django.conf import settings
+        from apps.analytics.document_extraction import generate_document_extraction_candidates
 
         doc = KBDocument.objects.select_related('organization').get(id=doc_id)
+        doc.processing_status = 'processing'
+        doc.save(update_fields=['processing_status', 'processed', 'updated_at'])
 
         # ── Text extraction (simplified) ─────────────────────────────────────
         # In production: use PyPDF2, python-docx, or LangChain loaders
-        text_to_embed = doc.filename  # fallback to filename if no text extraction
+        text_to_embed = _extract_kb_document_text(doc) or doc.filename
+        doc.extracted_text = text_to_embed[:50000]
 
         # ── Embedding generation ──────────────────────────────────────────────
         if settings.ENABLE_REAL_AI and settings.OPENAI_API_KEY:
@@ -309,8 +313,17 @@ def process_kb_document(self, doc_id: str) -> dict:
                     input=text_to_embed[:8000],  # Token limit
                 )
                 embedding = response.data[0].embedding
-                doc.processed = True
-                doc.save(update_fields=['processed'])
+                doc.embedding = {
+                    'provider': 'openai',
+                    'model': settings.OPENAI_EMBEDDING_MODEL,
+                    'vector': embedding,
+                }
+                doc.processing_status = 'ready'
+                doc.save(update_fields=['embedding', 'extracted_text', 'processing_status', 'processed', 'updated_at'])
+                try:
+                    generate_document_extraction_candidates(document=doc)
+                except Exception as extraction_error:
+                    logger.warning('kb_doc_structured_extraction_error', doc_id=doc_id, error=str(extraction_error))
 
                 logger.info('kb_doc_embedded_openai', doc_id=doc_id, dim=len(embedding))
                 return {'status': 'ok', 'doc_id': doc_id, 'embedding_dim': len(embedding)}
@@ -329,12 +342,69 @@ def process_kb_document(self, doc_id: str) -> dict:
         else:
             embedding = {}
 
-        doc.processed = True
-        doc.save(update_fields=['processed'])
+        doc.embedding = {
+            'provider': 'heuristic',
+            'vector': embedding,
+        }
+        doc.processing_status = 'ready'
+        doc.save(update_fields=['embedding', 'extracted_text', 'processing_status', 'processed', 'updated_at'])
+        try:
+            generate_document_extraction_candidates(document=doc)
+        except Exception as extraction_error:
+            logger.warning('kb_doc_structured_extraction_error', doc_id=doc_id, error=str(extraction_error))
 
         logger.info('kb_doc_processed_heuristic', doc_id=doc_id, title=doc.filename)
         return {'status': 'ok', 'doc_id': doc_id, 'method': 'heuristic'}
 
     except Exception as exc:
+        try:
+            from apps.knowledge_base.models import KBDocument
+            KBDocument.objects.filter(id=doc_id).update(
+                processing_status='failed',
+                processed=False,
+            )
+        except Exception:
+            pass
         logger.error('kb_process_error', doc_id=doc_id, error=str(exc), exc_info=True)
         raise self.retry(exc=exc)
+
+
+def _extract_kb_document_text(doc) -> str:
+    filename = (doc.filename or '').lower()
+
+    try:
+        with doc.file.open('rb') as handle:
+            data = handle.read()
+    except Exception:
+        return ''
+
+    if filename.endswith('.txt'):
+        for encoding in ('utf-8', 'latin-1', 'cp1252'):
+            try:
+                return data.decode(encoding)
+            except Exception:
+                continue
+        return ''
+
+    if filename.endswith('.pdf'):
+        try:
+            from io import BytesIO
+            from PyPDF2 import PdfReader
+
+            reader = PdfReader(BytesIO(data))
+            pages = [(page.extract_text() or '').strip() for page in reader.pages]
+            return '\n'.join(part for part in pages if part)
+        except Exception:
+            return ''
+
+    if filename.endswith('.docx'):
+        try:
+            from io import BytesIO
+            from docx import Document
+
+            document = Document(BytesIO(data))
+            return '\n'.join(paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip())
+        except Exception:
+            return ''
+
+    return ''

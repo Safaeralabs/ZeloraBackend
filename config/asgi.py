@@ -1,7 +1,7 @@
 """
 ASGI config for Vendly.
 Handles both HTTP (Django) and WebSocket (Django Channels) traffic.
-WebSocket connections are authenticated via JWT token in query params.
+WebSocket connections are authenticated via JWT token in WebSocket subprotocol.
 """
 import os
 import django

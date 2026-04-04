@@ -7,6 +7,8 @@ class ChannelConfig(models.Model):
         ('whatsapp', 'WhatsApp'),
         ('instagram', 'Instagram'),
         ('web', 'Web Chat'),
+        ('onboarding', 'Onboarding Profile'),
+        ('database', 'Database'),
         ('tiktok', 'TikTok'),
         ('email', 'Email'),
         ('telegram', 'Telegram'),

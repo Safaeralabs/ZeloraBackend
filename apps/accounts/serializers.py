@@ -67,6 +67,98 @@ class OrganizationSerializer(serializers.ModelSerializer):
         }
 
 
+class OnboardingProfileSerializer(serializers.Serializer):
+    organization_name = serializers.CharField(max_length=200)
+    website = serializers.CharField(allow_blank=True, required=False)
+    timezone = serializers.CharField(allow_blank=True, required=False)
+    tax_id = serializers.CharField(allow_blank=True, required=False)
+    contact_email = serializers.EmailField(allow_blank=True, required=False)
+    contact_phone = serializers.CharField(allow_blank=True, required=False)
+    payment_methods = serializers.ListField(
+        child=serializers.CharField(max_length=100),
+        required=False,
+    )
+    payment_settings = serializers.JSONField(required=False)
+    what_you_sell = serializers.CharField(allow_blank=True, required=False)
+    who_you_sell_to = serializers.CharField(allow_blank=True, required=False)
+    sales_agent_name = serializers.CharField(allow_blank=True, required=False)
+    sales_agent_profile = serializers.JSONField(required=False)
+    quick_knowledge_text = serializers.CharField(allow_blank=True, required=False)
+    quick_knowledge_links = serializers.ListField(
+        child=serializers.CharField(max_length=500),
+        required=False,
+    )
+    quick_knowledge_files = serializers.ListField(
+        child=serializers.JSONField(),
+        required=False,
+    )
+    activation_tasks = serializers.JSONField(required=False)
+    initial_onboarding_completed = serializers.BooleanField(required=False)
+    brand_profile = serializers.JSONField(required=False)
+    sales_playbook = serializers.JSONField(required=False)
+    buyer_model = serializers.JSONField(required=False)
+    commerce_rules = serializers.JSONField(required=False)
+    locale_settings = serializers.JSONField(required=False)
+    notification_settings = serializers.JSONField(required=False)
+    ai_preferences = serializers.JSONField(required=False)
+    optimization_profile = serializers.JSONField(required=False)
+    onboarding_status = serializers.CharField(max_length=30, allow_blank=True, required=False)
+    completed_step = serializers.IntegerField(min_value=1, max_value=3, required=False)
+
+    def validate_website(self, value):
+        if value and not (value.startswith('http://') or value.startswith('https://')):
+            return f'https://{value}'
+        return value
+
+    def to_representation(self, instance):
+        if not isinstance(instance, dict):
+            return super().to_representation(instance)
+
+        return {
+            'organization_name': instance.get('organization_name', ''),
+            'website': instance.get('website', ''),
+            'timezone': instance.get('timezone', ''),
+            'tax_id': instance.get('tax_id', ''),
+            'contact_email': instance.get('contact_email', ''),
+            'contact_phone': instance.get('contact_phone', ''),
+            'payment_methods': instance.get('payment_methods', []),
+            'payment_settings': instance.get('payment_settings', {}),
+            'what_you_sell': instance.get('what_you_sell', ''),
+            'who_you_sell_to': instance.get('who_you_sell_to', ''),
+            'sales_agent_name': instance.get('sales_agent_name', ''),
+            'sales_agent_profile': instance.get('sales_agent_profile', {}),
+            'quick_knowledge_text': instance.get('quick_knowledge_text', ''),
+            'quick_knowledge_links': instance.get('quick_knowledge_links', []),
+            'quick_knowledge_files': instance.get('quick_knowledge_files', []),
+            'activation_tasks': instance.get('activation_tasks', {}),
+            'initial_onboarding_completed': instance.get('initial_onboarding_completed', False),
+            'brand_profile': instance.get('brand_profile', {}),
+            'sales_playbook': instance.get('sales_playbook', {}),
+            'buyer_model': instance.get('buyer_model', {}),
+            'commerce_rules': instance.get('commerce_rules', {}),
+            'locale_settings': instance.get('locale_settings', {}),
+            'notification_settings': instance.get('notification_settings', {}),
+            'ai_preferences': instance.get('ai_preferences', {}),
+            'optimization_profile': instance.get('optimization_profile', {}),
+            'onboarding_status': instance.get('onboarding_status', 'draft'),
+            'completed_step': instance.get('completed_step', 1),
+        }
+
+
+class OnboardingQuickKnowledgeUploadSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    filename = serializers.CharField()
+    file_size = serializers.IntegerField()
+    mime_type = serializers.CharField(allow_blank=True)
+    uploaded_at = serializers.DateTimeField()
+
+
+class SignupAvailabilitySerializer(serializers.Serializer):
+    email = serializers.EmailField(required=False, allow_blank=True)
+    name = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    company = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+
 # ─── User (Agent) ──────────────────────────────────────────────────────────────
 
 class UserSerializer(serializers.ModelSerializer):
@@ -143,7 +235,7 @@ class ContactSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'nombre', 'apellido', 'full_name', 'email', 'telefono', 'cedula',
             'tipo', 'tipo_afiliado', 'canal', 'metadata', 'tags',
-            'is_active', 'created_at', 'updated_at',
+            'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'organization', 'created_at', 'updated_at', 'full_name']
 
@@ -154,4 +246,4 @@ class ContactListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Contact
-        fields = ['id', 'full_name', 'telefono', 'email', 'tipo', 'canal', 'is_active', 'created_at']
+        fields = ['id', 'full_name', 'telefono', 'email', 'tipo', 'canal', 'metadata', 'created_at']

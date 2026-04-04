@@ -1,0 +1,272 @@
+[
+  {
+    "topic": "subsidio_monetario",
+    "route_hint": "operations",
+    "title": "Subsidio Monetario",
+    "sample_questions": [
+      "Buenas tarde tuve un inconveniente con el número de cuenta por donde me consignaban el subsidio monetaro y tuve que cambiar de numero de daviplata y por esta razon no he podido recibir este beneficio desde hace dos meses como hago para reportar el cambio de numero?",
+      "[EMAIL]",
+      "Como se si soy beneficiario",
+      "Hola",
+      "[EMAIL]",
+      "Buenas tardes, Cordial saludo. Por medio de la presente, me permito solicitar información relacionada con el subsidio por hijos del cual soy beneficiario. Me encuentro afiliado desde hace aproximadamente ocho meses; sin embargo, hasta la fecha no he recibido el subsidio monetario correspondiente a mis hijas, pese a que ya fue aprobada la cuenta bancaria donde se realizarían los depósitos. Agradezco de antemano su atención y colaboración. Quedo atento a cualquier información adicional que requieran de mi parte. Cordialmente, Jorge Armando Castillo Muriel",
+      "Hola",
+      "Como puedo obtener un subsidio de vivienda",
+      "Soy afiliada categoría A",
+      "Buenas tardes"
+    ],
+    "sample_answers": [
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Señor Parodi recibimos su solicitud la cual fue remitida para darle respuesta el lunes.",
+      "Entiendo señor Andrés",
+      "Señor Andrés Validando el historial de esta conversación encontramos que quedamos en enviar su respuesta al correo que usted nos suministro y de hecho se le envió esta respuesta formal al correo el pasado 25 de marzo, favor validar en su correo dicha respuesta.",
+      "Respuesta enviada al correo: [EMAIL]",
+      "Estimado Sr. Parodi Mendoza, Reciba un cordial saludo. Tras revisar nuestra base de datos, le informamos que su afiliación a través de la empresa SERO SERVICIOS OCASIONALES está activa desde el 19 de diciembre de 2025. Ya se ha gestionado la novedad de giro correspondiente, por lo cual el pago de los subsidios de los meses de diciembre, enero y febrero de 2026 se hará efectivo a finales del presente mes de marzo. Cordialmente,",
+      "Asi mismo le envio el texto del area de aportes y subsidio.",
+      "Los giros están en proceso de realizarse el día de hoy, puede validar después de 6:00 pm",
+      "Buenas tardes le escribe Alicia López de Comfaguajira",
+      "Para validar su afiliación es necesario que nos suministre los datos numero de [DOCUMENTO] completo del trabajador"
+    ],
+    "article_seed": "Tema detectado historicamente: subsidio_monetario. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  },
+  {
+    "topic": "general",
+    "route_hint": "operations",
+    "title": "General",
+    "sample_questions": [
+      "Buen día",
+      "Buen día",
+      "Si",
+      "[EMAIL]",
+      "Buenos días",
+      "Mi nombre es Dilibeth Carrillo Epiayu identificada con [DOCUMENTO] y mi correo electrónico es [EMAIL] El motivo de mi consulta es saber cómo hago para que me activen en comfaguajira, o sea que proceso debo de hacer o seguir",
+      "Ok",
+      "Buenos días",
+      "Hola buen día",
+      "Hola"
+    ],
+    "sample_answers": [
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Señora Daylimar, su estado en nuestro sistema es inactivo. Si esta laborando con una empresa, la empresa debe afiliarla.",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Buenos días para reservas[TELEFONO] mensajes watsapp",
+      "Buenas tardes, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "Trabajador no cumple con los requisitos, verificar giros, estados de beneficiarios o sobre tope con conyuge",
+      "LOS KITS ESCOLARES 2026 EN LA CALLE 15 CON CARA 13 CENTRO DE FORMACIÓN, DE 7:30 AM A 4:00 PM, deben LLEVAR EL [DOCUMENTO] DE IDENTIFICACIÓN.[TELEFONO] –[TELEFONO] –[TELEFONO] Para efectos de atender la entrega de los KIT ESCOLARES 2026, es necesario que todos conozcamos la siguiente información: Te puedes apoyar con los siguientes correos: YESICA JUDITH COTES AGUILAR [EMAIL] MAYRA ISABEL COTES ARIZA [EMAIL] 1.CRITERIOS DE ASIGNACIÓN Y ENTREGA DE KIT ESCOLARES aprobados para la vigencia 2026, para su información y manejo. Teniendo en cuenta que nuestros usuarios en los diferentes municipios o UISES preguntan SI APLICAN para recibir KIT ESCOLARES, solicitamos nuevamente apoyo a cada una de las Uises y oficina de atención al cliente, consulten directamente en el aplicativo SUBES SI APLICA AL BENEFICIO y el afiliado se lleve una respuesta a su consulta y pueda realizar a tiempo algún trámite pertinente antes de iniciar entrega y no haga filas si no aplica Cualquier duda sobre este [DOCUMENTO] con gusto estaremos atentos para su aclaración y brindarle información clara y oportuna al afiliado, con gusto pueden contactarnos: Dra Elidruth - Orangel - Roslin y mi persona. IMPORTANTE: Pronto compartiremos CRONOGRAMA DE ENTREGA para cada uno de los 15 municipios del departamento de La Guajira Dentro de los aspectos a tener en cuenta , existen estas estas novedades para brindarle información: - Trabajador o beneficiarios Inactivos - si están trabajando brindarle información al respecto, porque a veces cumple con todos los criterios y ellos desconocen que deben hacer para que puedan activarlos. Si no está trabajando, obligatoriamente debe estar activo como lo indica uno de los criterios. - Empresa no pagó aportes en la fecha establecida: Indicarles el criterio No. 3, el cual indica que la empresa debió pagar por el trabajador el mes de OCTUBRE -2025 en la fecha establecida, es decir hasta el 26 de noviembre de 2025, como fecha máxima. Esto no quiere decir que la empresa no está a paz y salvo.... sólo hace alusión al mes de Octubre. Por tanto no aplica para kit escolares. - EDADES y GRADOS: Obligatoriamente debe tener de 5 años cumplidos hasta 18 años y cursar Transición hasta Octavo. si cursa 9°- 10° y 11°, esta población tiene subsidio de KIT PRE ICFES con simulacros, la Caja estará informando más adelante por los diferentes medios de comunicación. - SOBRE TOPE SALARIAL: Indicado en criterio No. 7: Favor leerlo detenidamente. Los ingresos familiares (papá + mamá que conviven) no pueden superar los 4 SMMLV. - Si el padre no aplica, favor preguntarle si la mamá de los niños trabaja con una empresa para que le puedan hacer la consulta, recuerden que no deben suministrar datos personales a personas diferentes al afiliado titular . - Entrega empresarial: Si alguna empresa solicita entrega de kit escolares en sus instalaciones, favor suministrar el correo electrónico ([EMAIL]) para hagan la solicitud indicando el nombre, NIT, dirección y municipio; el servicio se encarga de revisar las solicitudes para viabilidad de entrega siempre y cuando se cuente con una población promedio de afiliados para atender en programaciones empresariales y cumpla los requisitos. 2. QUIEN RECLAMA LOS KITS ESCOLARES: El trabajador afiliado, quien debe firmar el recibido.",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta."
+    ],
+    "article_seed": "Tema detectado historicamente: general. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  },
+  {
+    "topic": "educacion",
+    "route_hint": "operations",
+    "title": "Educacion",
+    "sample_questions": [
+      "Hola, buen día",
+      "Buen día Alicia, quisiera saber más información, ya que esta es mi caja de compensación y quiero saber cómo acceder a mi usuario y beneficios",
+      "Daylimar Adriana Pulgar Parra [DOCUMENTO][TELEFONO]",
+      "Quedo pendiente, muchas gracias",
+      "Buenas tardes, como hago para reclamar el kit escolar de mi niño, ya que el día de hoy en el municipio de Fonseca lugar donde vivo, me acerqué a buscarlo y me digerían que si no estaba en una lista que de manera informal hicieron desde las 6 AM no me lo entregaban, que debía estar en dicha lista para podérmelo entregar, en el mensaje de texto solo decía que debía ir de 2 a 4 pm más no que debía ir en horas de la mañana a anotarme a mano en una lista que no es ni digitalizada ni sistematizada",
+      "Buenas tardes, como hago para reclamar el kit escolar de mi niño, ya que el día de hoy en el municipio de Fonseca lugar donde vivo, me acerqué a buscarlo y me digerían que si no estaba en una lista que de manera informal hicieron desde las 6 AM no me lo entregaban, que debía estar en dicha lista para podérmelo entregar, en el mensaje de texto solo decía que debía ir de 2 a 4 pm más no que debía ir en horas de la mañana a anotarme a mano en una lista que no es ni digitalizada ni sistematizada",
+      "Nombre: Elizabeth Rincon Arrieta [DOCUMENTO] Carrero: [[EMAIL]](mailto:[EMAIL]) Cel:[TELEFONO] Buenos días. Les escribo muy respetuosamente para pedirles por favor me regalen información de cómo de hacer para reclamar el kit escolar de mi niño, ya que en una primera entrega no pude asistir por la multitud de gente y estoy en estado de embarazo de alto riesgo, el día de ayer me acerqué a las oficinas, ya que me llegó un mensaje de texto que de 2 a 4 pm iban a hacer otra entrega y me encuentro con la sorpresa que había una lista elaborada de manera informal, a mano, no digitalizada, no sistematizada, y me dice la encargada que si no estoy en esa lista no me entregarían el kit, esto es en Fonseca Guajira municipio en el que vivo, les agradezco su colaboración, ya que en ningún momento se me informó que debía ir a anotarme en una lista que estaban haciendo desde las 6 AM",
+      "Buenas tardes",
+      "Serían tan amables me colaboran con una información",
+      "Hola buen día"
+    ],
+    "sample_answers": [
+      "Gracias por comunicarte con Comfaguajira Mi nombre es Alicia López ¿En qué te puedo ayudar hoy?",
+      "Para consultar en nuestros sistema y poder dar una información es necesario que nos envíe nombre completo , numero de [DOCUMENTO] y teléfono.",
+      "Estaremos validando para darle respuesta lo antes posible",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Buenos días señora Elizabeth , la próxima semana estaremos informando la fecha de entrega en el municipio de Fonseca. Estaremos confirmando el día y la hora por este medio. El día de hoy trabajamos hasta medio día retomamos el lunes Dios mediante. Feliz semana santa",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López , en que le podemos servir?",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López y con gusto le brindo información sobre nuestros nuevo servicio.",
+      "Por favor me facilita una linea que tenga WhatsApp para enviarle la información, por este medio no puedo compartir imágenes.",
+      "Gracias por comunicarte con Comfaguajira Mi nombre es Alicia López",
+      "El día de hoy se están entregando en Riohacha hasta las 3:00 pm en el centro de formación calle 15"
+    ],
+    "article_seed": "Tema detectado historicamente: educacion. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  },
+  {
+    "topic": "afiliaciones",
+    "route_hint": "operations",
+    "title": "Afiliaciones",
+    "sample_questions": [
+      "Hol quiero meter mi cónyuge como puedo hacer",
+      "[EMAIL]",
+      "Buenas soy afiliada a la caja y deseo obtene informcion para la recreacion en Maziruma. Pasadias con estadia para 24 horas",
+      "Hola buenos días",
+      "Soy yair Smith fuentes Barliza",
+      "Bustamante con número de [DOCUMENTO][TELEFONO]",
+      "Quisiera saber si ya aparezco activo y quienes son mis afiliados",
+      "Hola! Quiero consultar mi estado de afiliación",
+      "Hola Buenos dias",
+      "quisiera saber si la empresa para la que trabajo ya me afilio"
+    ],
+    "sample_answers": [
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "[TELEFONO] Nombre : FUENTES BUSTAMANTE YAIR SMITH Estado : ACTIVO",
+      "FUENTES BARLIZA ALAN SMITH, FUENTES BARLIZA EILEEN SMITH y FUENTES BARLIZA FAYLETH SMITH",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Señor Rojas en nuestra base de datos no parece afiliación con sus datos. Si labora con una empresa como dependiente la empresa debe formalizar la afiliación del trabajador ante Comfaguajira",
+      "Comuníquese con su empleador por favor.",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López ¿En qué te puedo ayudar hoy?",
+      "Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Los giros se realizan el día de hoy, se reflejan al final del día después de 6:00 pm"
+    ],
+    "article_seed": "Tema detectado historicamente: afiliaciones. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  },
+  {
+    "topic": "certificados",
+    "route_hint": "operations",
+    "title": "Certificados",
+    "sample_questions": [
+      "Buenas tardes",
+      "Como enviar los certificados de estudios a que dirección,",
+      "Yair Smith fuentes Bustamante[TELEFONO]",
+      "A que correo puedo enviar los certificados de estudio de mi hijas del año en curso",
+      "Buenos días",
+      "Me encuentro intentando descargar un certificado de vinculación pero no me permite la descarga, parece que hay fallas con la plataforma",
+      "Buenas tarde Para solicitar un certificado",
+      "Luciano Correa Cordoba [DOCUMENTO] Correo: [EMAIL] Tlf:[TELEFONO] Necesito el certificado de la EPS porque me lo están pidiendo en la empresa",
+      "Gracias , por la informacion",
+      "buenos dias"
+    ],
+    "sample_answers": [
+      "Los Certificados Estudiantiles de los hijos: Lo escaneas en formato PDF y lo envías al correo de KELLYS CAMACHO VELAZQUEZ [EMAIL] y [EMAIL] Después de los 12 años debe presentar el certificado escolar todos los años si es primaria o bachillerato, en el caso universitario o técnico debe presentar el certificado escolar semestral. Colocarle una nota que diga el nombre, numero del [DOCUMENTO] y teléfono del trabajador afiliado “titular”, cualquier otra inquietud en la oficina de subsidio están dispuesto a colaborarle, con los siguientes contactos[TELEFONO] ext. 4103, 4104, 4105. [TELEFONO] –[TELEFONO] solo llamadas, y[TELEFONO] solo WhatsApp",
+      "Los Certificados Estudiantiles de los hijos: Lo escaneas en formato PDF y lo envías al correo de KELLYS CAMACHO VELAZQUEZ [EMAIL] y [EMAIL] Después de los 12 años debe presentar el certificado escolar todos los años si es primaria o bachillerato, en el caso universitario o técnico debe presentar el certificado escolar semestral. Colocarle una nota que diga el nombre, numero del [DOCUMENTO] y teléfono del trabajador afiliado “titular”, cualquier otra inquietud en la oficina de subsidio están dispuesto a colaborarle, con los siguientes contactos[TELEFONO] ext. 4103, 4104, 4105. [TELEFONO] –[TELEFONO] solo llamadas, y[TELEFONO] solo WhatsApp",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "El certificado de afiliación lo puede solicitar al siguiente correo: [EMAIL]",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Señor Correo la EPS Comfaguajira fue liquidada hace 2 años, la Super Salud ubico a los usuarios e otras EPS debe hacer la consulta en Adres",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López",
+      "Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Estamos validando su solicitud",
+      "Buenas tardes, su núcleo familiar esta activo y tienen la documentación actualizada, los giros de los subsidios aun no se han realizado, recuerde que se hacen el ultimo día hábil del mes y se refleja después de 6 pm"
+    ],
+    "article_seed": "Tema detectado historicamente: certificados. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  },
+  {
+    "topic": "medio_de_pago",
+    "route_hint": "operations",
+    "title": "Medio De Pago",
+    "sample_questions": [
+      "Buenas tardes",
+      "Mi nombre es Wilson Otero",
+      "Yo actualice el medio de pago y el día de ayer recibí un mensaje de texto que decia:Comfaguajira le informa que el giro de la cuota monetaria fue anulado, que solicitamos acercarse a la oficina mas cercana para cambiar su medio de pago",
+      "Una pregunta la cuenta si está activa y puedo recibir el pago del mes de febrero y marzo.",
+      "[TELEFONO]",
+      "La anterior era[TELEFONO] NEQUI y el medio de pago actualizado es[TELEFONO] NEQUI. LOS PAGOS ANULADOS LOS REEMBOLSAN",
+      "buenos dias como puedo solicitar un estado de cuenta??",
+      "BUENOS DIAS QUIERO SOLICITAR UN PAZ Y SALVO O ESTTADO DE CUENTA DE LA EMPRESA",
+      "COMPO PUEDO HACERLO?",
+      "OK MUCHAS GRACIAS"
+    ],
+    "sample_answers": [
+      "Buenas tardes señor Wilson",
+      "Aun no se han realizado los pagos del subsidio del mes de marzo",
+      "Por favor su numero de cc",
+      "El giro de enero fue anulado señor Otero numero de linea que aporto para medio de pago y de que entidad",
+      "El numero[TELEFONO] es el que aparece actualizado",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López Con el propósito de brindar una información precisa, es necesario que nos suministre algunos datos: nombres completos, numero de [DOCUMENTO], correo y teléfono; Adicional una descripción de su consulta.",
+      "Buenos días le responde Alicia López de Comfaguajira",
+      "Para solicitar un certificado debe hacerlo de manera formal al correo : [EMAIL]",
+      "Importante colocar los datos necesarios nit, nombre de la empresa, correo y numero de teléfono. Y una descripción breve de los que requiere y con que fin.",
+      "Es un gusto servirle"
+    ],
+    "article_seed": "Tema detectado historicamente: medio_de_pago. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  },
+  {
+    "topic": "recreacion_turismo",
+    "route_hint": "sales",
+    "title": "Recreacion Turismo",
+    "sample_questions": [
+      "Hola",
+      "La pasadía por persona en Anas Mai para adultos y niños en cuanto sale",
+      "Se puede comprar la pasadía el mismo día de llegada o se debe comprar por adelantado",
+      "Hola",
+      "Me gustaría saber la tarifa para recreacion dirigida a niños de primaria desde los 5 a 12 años en colegio con motivo del dia del niño y la recreación, por favor.",
+      "Estoy escribiendo y no recibo respuesta 🤷🏻‍♀️",
+      "Buenas",
+      "Me interesa comprar unas boletas para el pasadía en Anas mai",
+      "¿Qué dias venden los almuerzos en anas mai?",
+      "hola buen dia"
+    ],
+    "sample_answers": [
+      "Puede comprar el pasadia en la taquilla mañana a partir de las 9:00 am",
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López, en que le puedo servir?",
+      "Para eventos de recreación puede escribir a la linea[TELEFONO]",
+      "En ese caso le facilitamos otra opción y es el correo: [EMAIL]",
+      "Importante para darle una información adecuada es necesario que nos comunique o que nos de mayor detalles de su evento, si el recreador lo desean con personaje animado, si solo un recreador, tienen alguna temática para la celebración en particular",
+      "Nos envia correo, nombre completo y telefono por favor",
+      "Buenas tardes le escribe Alicia López de Comfaguajira",
+      "Para los pasadías de Anas Mai puede llegar a partir de las 9:00 am, en la entrada validan su afiliación",
+      "Gracias por comunicarte con Comfaguajira Mi nombre es Alicia López y con gusto le brindo información sobre nuestros servicios.",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?"
+    ],
+    "article_seed": "Tema detectado historicamente: recreacion_turismo. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  },
+  {
+    "topic": "credito_social",
+    "route_hint": "operations",
+    "title": "Credito Social",
+    "sample_questions": [
+      "Estoy intentando solicitar crédito y el sistema me pide fecha de finalización de contrato, pero estoy registrada como indefinida y no me deja avanzar. ¿Pueden revisar o actualizar mis datos?",
+      "Buen día para hablar con un asesor",
+      "Buen día me llamo milibeth Indira mesa si me puede hacer el favor me puede colaborar el años pasado realize un crédito comfaguajira",
+      "Para saber cuántas cuotas me quedan",
+      "[TELEFONO]",
+      "Número de [DOCUMENTO] Celular[TELEFONO]",
+      "HOLA",
+      "ME GUSTARIA REALIZAR LA SOLICITUD DE CREDITO DE LIBRE INVERSION",
+      "Hola",
+      "[EMAIL]"
+    ],
+    "sample_answers": [
+      "Gracias por comunicarse con Comfaguajira Mi nombre es Alicia López, en que le puedo servir?",
+      "Entiendo que esta tratando de solicitar una pignoración, este proceso no se hace virtual el canal esta en mantenimiento en este momento. lo debe hacer presencial en la oficina mas cercana a su residencia.",
+      "Debe llevar los [DOCUMENTO]",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "SE PUEDE APOYAR CON LA OFICINA DE CREDITO : [TELEFONO] ext. 5000 [TELEFONO] MARTHA OSPINA CREDITO SOCIAL[TELEFONO] LILIBETH CORONEL CREDITO SOCIAL[TELEFONO] BIRLENIS VELASQUEZ CREDITO SOCIAL [TELEFONO] SOLO WHATSAPP CARTERA Correo: [EMAIL] - [EMAIL] [EMAIL]",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "KERRY PAOLA ARGUELLES ZUBIRIA Asesoria y ejecución de crédito por libranzas y pignoración de subsidio teléfono:[TELEFONO] WhatsApp y Llamadas Correo electrónico [EMAIL] SE PUEDE APOYAR CON LA OFICINA DE CREDITO : [TELEFONO] ext. 5000 [TELEFONO] MARTHA OSPINA CREDITO SOCIAL[TELEFONO] LILIBETH CORONEL CREDITO SOCIAL[TELEFONO] BIRLENIS VELASQUEZ CREDITO SOCIAL [TELEFONO] SOLO WHATSAPP CARTERA Correo: [EMAIL] - [EMAIL] [EMAIL] LE RECOMIENDO Y SE CONTACTE CON LA OFICINA DE CREDITO Y CARTERAS CONTACTOS: para Riohacha 605 / 7270204. Ext. 5000 [TELEFONO] solo WhatsApp Correo electronico [EMAIL] y para los demás municipios 605 / 7270204. Ext. 5000 Celulares [TELEFONO] - [TELEFONO] [TELEFONO] -[TELEFONO] - Dirección: Calle 13 Carrera 10 esquina [EMAIL] – [EMAIL] - [EMAIL] REQUISITOS DE LIBRANZA O PIGNORACIÓN: Certificación laboral vigente original no mayor a treinta (30) días que especifique salario y fecha de ingreso, fotocopia de [DOCUMENTO] al 150%, dos referencias una familiar y una personal, que ninguna de las dos vivan con usted. Además del nombres completo que tengan dirección con nomenclatura y celular que respondan las llamadas, certificación bancaria para el desembolso, los últimos dos desprendibles de pago, copia de un recibo de servicio publico.",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "SE PUEDE APOYAR CON LA OFICINA DE CREDITO : [TELEFONO] ext. 5000 [TELEFONO] MARTHA OSPINA CREDITO SOCIAL[TELEFONO] LILIBETH CORONEL CREDITO SOCIAL[TELEFONO] BIRLENIS VELASQUEZ CREDITO SOCIAL [TELEFONO] SOLO WHATSAPP CARTERA Correo: [EMAIL] - [EMAIL] [EMAIL]",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?"
+    ],
+    "article_seed": "Tema detectado historicamente: credito_social. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  },
+  {
+    "topic": "vivienda",
+    "route_hint": "operations",
+    "title": "Vivienda",
+    "sample_questions": [
+      "HOLA, ESTOY INTERADA EN LOS BENEFICIOS",
+      "DAIRUBYS JIMENEZ[TELEFONO]",
+      "Y DE VIVIENDA",
+      "Buenos días",
+      "Rodolfo Berrio [TELEFONO]",
+      "Es para solicitar como hago para inscribirme en los futuros proyectos de vivienda",
+      "Buenos días",
+      "Cuales son los requisitos para vivienda",
+      "Nairuth Sierra Gutiérrez [DOCUMENTO]",
+      "Cuales son los requisitos para vivienda"
+    ],
+    "sample_answers": [
+      "Buenas tardes, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "Nuestros Asesores Comerciales Te Apoyaran Con Tu Inquietud. Para una respuesta acertada se puede comunicar con la oficina de Mercadeo al tel.[TELEFONO] ext. 4126 Celulares:[TELEFONO] –[TELEFONO]-[TELEFONO] -[TELEFONO] también puedes escribir al WhatsApp o correos de nuestros asesores comerciales a los siguientes contactos: Llamadas y WhatsApp [TELEFONO] Wendy Tobias Asesor Riohacha Maziruma, Recreación Escuelas Deportivas, Eventos maxivos[TELEFONO] Astrid Cuadros Asesor Riohacha Tecnicos labotales, Especializaciones, Talleres, Salones, Auditorios en la calle 15 cra 13 esq edificio de Educación [TELEFONO] Miguel Palacio Asesor de Recreación Riohacha Anas mai, Escuelas Deportivas, Eventos maxivos, Salones Auditorios[TELEFONO] Millerlandys Suarez Asesor Riohacha Maziruma, Recreación Escuelas Deportivas, Eventos maxivos[TELEFONO] [TELEFONO] Mauren Maya Coordinadora de Ventas [EMAIL] [TELEFONO] Ext 4126 Ana Rodriguez Profesional De Apoyo [EMAIL] MAZIRUMA:[TELEFONO] llamadas -[TELEFONO] WhatsApp ANAS MAÍ: [TELEFONO]-[TELEFONO] Perla Mar : [TELEFONO] Llamadas y WhatsApp OFICINA DE TURISMO: [EMAIL]",
+      "La oficina de Vivienda Presta atención personal en la UIS Riohacha, Calle 14A No. 10-110 de lunes a viernes en el horario de 8:00 a 11:00 am, y de 2:00 a 4:00 pm atendiendo los protocolos de bioseguridad establecidos en el Distrito. Tel.[TELEFONO] ext. 5006 y 5009 [TELEFONO]. Llamadas y WhatsApp CONVOCATORIA AL SUBSIDIO FAMILIAR DE VIVIENDA EN EL AREA URBANA Y RURAL PARA AFILIADOS A COMFAGUAJIRA. FECHA DE APERTURA: 02 de Febrero de 2026. FECHA DE CIERRE: 13 de Marzo de 2026 ASIGNACIÓN: 15 de Abril de 2026 PUBLICACIÓN DE RESULTADOS: Mayo de 2026. MODALIDADES: Adquisición de vivienda, Construcción en lote propio y Mejoramiento de vivienda para el área urbana y rural APLICAN: Afiliados a la Caja de Compensación con ingresos hasta 4 smlmv. Para mayor información, puede comunicarse a la línea telefónica 7270204 Ext. 5009, 5006, WhatsApp[TELEFONO], oficina de Vivienda Calle 14 A No. 10-110- Riohacha LA DIVISIÓN DEL SUBSIDIO FAMILIAR, DE LA CAJA DE COMPENSACIÓN FAMILIAR DE LA GUAJIRA -COMFAGUAJIRA, INFORMA A los beneficiarios del subsidio familiar de vivienda, asignados mediante Acta 096 de 2022 que a la fecha no han cobrado el subsidio, que estos vencen el día 31 de Enero de 2026. Por lo anterior, sólo serán pagados aquellos subsidios cuyas escrituras públicas estén suscritas dentro de esta fecha, y se presente su cobro, con el cumplimiento de los requisitos, dentro de los noventa (90) días siguientes al vencimiento del subsidio (artículo [IP].[IP]. parágrafo 2° del Decreto 1077/2015), modificado por el Art. 12 del Decreto 1533 de 2019. Vencidos los plazos establecidos en la Normatividad Vigente, sin que se cumplan los requisitos reglamentarios, se extingue la obligación de Comfaguajira de desembolsar el subsidio, el cual será anulado y sus recursos retornarán al Fondo de Vivienda de Interés Social FOVIS para ser asignado a nuevos hogares postulantes. Para mayor información, puede comunicarse a través del correo electrónico [EMAIL], o por los números telefónicos (605)7270204 Ext. 5009, 5006 WhatsApp[TELEFONO]. https://comfaguajira.co/wp-content/uploads/2026/01/Vencimientos-Enero-1.pdf stúlate para un subsidio de vivienda hasta por $52.527.150.azPostúlate Para mayor información, puede comunicarse a través del correo electrónico [EMAIL],[TELEFONO]. Llamadas y WhatsApp y[TELEFONO] ext. 5006 y 5009 Oficina de Vivienda Calle 14 A No. 10 – 110 - Riohacha",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "La oficina de Vivienda Presta atención personal en la UIS Riohacha, Calle 14A No. 10-110 de lunes a viernes en el horario de 8:00 a 11:00 am, y de 2:00 a 4:00 pm atendiendo los protocolos de bioseguridad establecidos en el Distrito. Tel.[TELEFONO] ext. 5006 y 5009 [TELEFONO]. Llamadas y WhatsApp CONVOCATORIA AL SUBSIDIO FAMILIAR DE VIVIENDA EN EL AREA URBANA Y RURAL PARA AFILIADOS A COMFAGUAJIRA. FECHA DE APERTURA: 02 de Febrero de 2026. FECHA DE CIERRE: 13 de Marzo de 2026 ASIGNACIÓN: 15 de Abril de 2026 PUBLICACIÓN DE RESULTADOS: Mayo de 2026. MODALIDADES: Adquisición de vivienda, Construcción en lote propio y Mejoramiento de vivienda para el área urbana y rural APLICAN: Afiliados a la Caja de Compensación con ingresos hasta 4 smlmv. Para mayor información, puede comunicarse a la línea telefónica 7270204 Ext. 5009, 5006, WhatsApp[TELEFONO], oficina de Vivienda Calle 14 A No. 10-110- Riohacha LA DIVISIÓN DEL SUBSIDIO FAMILIAR, DE LA CAJA DE COMPENSACIÓN FAMILIAR DE LA GUAJIRA -COMFAGUAJIRA, INFORMA A los beneficiarios del subsidio familiar de vivienda, asignados mediante Acta 096 de 2022 que a la fecha no han cobrado el subsidio, que estos vencen el día 31 de Enero de 2026. Por lo anterior, sólo serán pagados aquellos subsidios cuyas escrituras públicas estén suscritas dentro de esta fecha, y se presente su cobro, con el cumplimiento de los requisitos, dentro de los noventa (90) días siguientes al vencimiento del subsidio (artículo [IP].[IP]. parágrafo 2° del Decreto 1077/2015), modificado por el Art. 12 del Decreto 1533 de 2019. Vencidos los plazos establecidos en la Normatividad Vigente, sin que se cumplan los requisitos reglamentarios, se extingue la obligación de Comfaguajira de desembolsar el subsidio, el cual será anulado y sus recursos retornarán al Fondo de Vivienda de Interés Social FOVIS para ser asignado a nuevos hogares postulantes. Para mayor información, puede comunicarse a través del correo electrónico [EMAIL], o por los números telefónicos (605)7270204 Ext. 5009, 5006 WhatsApp[TELEFONO]. https://comfaguajira.co/wp-content/uploads/2026/01/Vencimientos-Enero-1.pdf stúlate para un subsidio de vivienda hasta por $52.527.150.azPostúlate Para mayor información, puede comunicarse a través del correo electrónico [EMAIL],[TELEFONO]. Llamadas y WhatsApp y[TELEFONO] ext. 5006 y 5009 Oficina de Vivienda Calle 14 A No. 10 – 110 - Riohacha",
+      "Buenas tardes, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "La oficina de Vivienda Presta atención personal en la UIS Riohacha, Calle 14A No. 10-110 de lunes a viernes en el horario de 8:00 a 11:00 am, y de 2:00 a 4:00 pm atendiendo los protocolos de bioseguridad establecidos en el Distrito. Tel.[TELEFONO] ext. 5006 y 5009 [TELEFONO]. Llamadas y WhatsApp CONVOCATORIA AL SUBSIDIO FAMILIAR DE VIVIENDA EN EL AREA URBANA Y RURAL PARA AFILIADOS A COMFAGUAJIRA. FECHA DE APERTURA: 02 de Febrero de 2026. FECHA DE CIERRE: 13 de Marzo de 2026 ASIGNACIÓN: 15 de Abril de 2026 PUBLICACIÓN DE RESULTADOS: Mayo de 2026. MODALIDADES: Adquisición de vivienda, Construcción en lote propio y Mejoramiento de vivienda para el área urbana y rural APLICAN: Afiliados a la Caja de Compensación con ingresos hasta 4 smlmv. Para mayor información, puede comunicarse a la línea telefónica 7270204 Ext. 5009, 5006, WhatsApp[TELEFONO], oficina de Vivienda Calle 14 A No. 10-110- Riohacha LA DIVISIÓN DEL SUBSIDIO FAMILIAR, DE LA CAJA DE COMPENSACIÓN FAMILIAR DE LA GUAJIRA -COMFAGUAJIRA, INFORMA A los beneficiarios del subsidio familiar de vivienda, asignados mediante Acta 096 de 2022 que a la fecha no han cobrado el subsidio, que estos vencen el día 31 de Enero de 2026. Por lo anterior, sólo serán pagados aquellos subsidios cuyas escrituras públicas estén suscritas dentro de esta fecha, y se presente su cobro, con el cumplimiento de los requisitos, dentro de los noventa (90) días siguientes al vencimiento del subsidio (artículo [IP].[IP]. parágrafo 2° del Decreto 1077/2015), modificado por el Art. 12 del Decreto 1533 de 2019. Vencidos los plazos establecidos en la Normatividad Vigente, sin que se cumplan los requisitos reglamentarios, se extingue la obligación de Comfaguajira de desembolsar el subsidio, el cual será anulado y sus recursos retornarán al Fondo de Vivienda de Interés Social FOVIS para ser asignado a nuevos hogares postulantes. Para mayor información, puede comunicarse a través del correo electrónico [EMAIL], o por los números telefónicos (605)7270204 Ext. 5009, 5006 WhatsApp[TELEFONO]. https://comfaguajira.co/wp-content/uploads/2026/01/Vencimientos-Enero-1.pdf stúlate para un subsidio de vivienda hasta por $52.527.150.azPostúlate Para mayor información, puede comunicarse a través del correo electrónico [EMAIL],[TELEFONO]. Llamadas y WhatsApp y[TELEFONO] ext. 5006 y 5009 Oficina de Vivienda Calle 14 A No. 10 – 110 - Riohacha",
+      "Buenas tardes, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?",
+      "La oficina de Vivienda Presta atención personal en la UIS Riohacha, Calle 14A No. 10-110 de lunes a viernes en el horario de 8:00 a 11:00 am, y de 2:00 a 4:00 pm atendiendo los protocolos de bioseguridad establecidos en el Distrito. Tel.[TELEFONO] ext. 5006 y 5009 [TELEFONO]. Llamadas y WhatsApp",
+      "Buenos días, le habla su servidor Enrique Mejía Toro, para mayor veracidad en la conversación por favor me colabora con su nombre, numero de [DOCUMENTO] y teléfono, espero apoyarle de la mejor manera en resolver sus inquietudes, ¿en qué le puedo ayudar?"
+    ],
+    "article_seed": "Tema detectado historicamente: vivienda. Usa este bloque para crear un articulo o playbook especifico de la marca."
+  }
+]

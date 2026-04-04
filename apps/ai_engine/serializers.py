@@ -1,15 +1,5 @@
 from rest_framework import serializers
-from .models import AIMemoryEntry, AITask, AIInsight, AIPerformanceLog
-
-
-class AIMemoryEntrySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AIMemoryEntry
-        fields = [
-            'id', 'memory_type', 'key', 'value', 'source_conversation',
-            'confidence', 'is_active', 'created_at', 'updated_at',
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+from .models import AITask, AIInsight, AIPerformanceLog
 
 
 class AITaskSerializer(serializers.ModelSerializer):

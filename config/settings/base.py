@@ -6,14 +6,28 @@ All secrets come from environment variables / .env file.
 from pathlib import Path
 from datetime import timedelta
 import os
+from django.core.exceptions import ImproperlyConfigured
+
+from dotenv import load_dotenv
 
 # ─── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+load_dotenv(BASE_DIR / '.env', override=True)
 
 # ─── Secret / Debug ────────────────────────────────────────────────────────────
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-in-production-VENDLY2026')
 DEBUG = os.environ.get('DEBUG', 'False').lower() in ('1', 'true', 'yes')
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if h.strip()]
+USE_SQLITE = os.environ.get('USE_SQLITE', 'False').lower() in ('1', 'true', 'yes')
+USE_INMEMORY_CHANNEL_LAYER = os.environ.get('USE_INMEMORY_CHANNEL_LAYER', 'False').lower() in ('1', 'true', 'yes')
+USE_LOCMEM_CACHE = os.environ.get('USE_LOCMEM_CACHE', 'False').lower() in ('1', 'true', 'yes')
+CELERY_TASK_ALWAYS_EAGER = os.environ.get('CELERY_TASK_ALWAYS_EAGER', 'False').lower() in ('1', 'true', 'yes')
+
+if not DEBUG and SECRET_KEY == 'django-insecure-change-in-production-VENDLY2026':
+    raise ImproperlyConfigured('SECRET_KEY must be set to a secure value when DEBUG is disabled')
+
+if not DEBUG and os.environ.get('DB_PASSWORD', 'vendly_pass') == 'vendly_pass':
+    raise ImproperlyConfigured('DB_PASSWORD must be set to a secure value when DEBUG is disabled')
 
 # ─── Applications ──────────────────────────────────────────────────────────────
 DJANGO_APPS = [
@@ -54,6 +68,7 @@ LOCAL_APPS = [
     'apps.campaigns',
     'apps.flows',
     'apps.analytics',
+    'apps.ai_router',
     'apps.ai_engine',
     'apps.billing',
     'apps.ecommerce',
@@ -98,23 +113,31 @@ TEMPLATES = [
 ]
 
 # ─── Database (PostgreSQL) ──────────────────────────────────────────────────────
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('DB_NAME', 'vendly_db'),
-        'USER': os.environ.get('DB_USER', 'vendly_user'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', 'vendly_pass'),
-        'HOST': os.environ.get('DB_HOST', 'postgres'),
-        'PORT': os.environ.get('DB_PORT', '5432'),
-        'CONN_MAX_AGE': 60,
-        'OPTIONS': {
-            'connect_timeout': 10,
-        },
-        'TEST': {
-            'NAME': 'test_vendly_db',
-        },
+if USE_SQLITE:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('DB_NAME', 'vendly_db'),
+            'USER': os.environ.get('DB_USER', 'vendly_user'),
+            'PASSWORD': os.environ.get('DB_PASSWORD', 'vendly_pass'),
+            'HOST': os.environ.get('DB_HOST', 'postgres'),
+            'PORT': os.environ.get('DB_PORT', '5432'),
+            'CONN_MAX_AGE': 60,
+            'OPTIONS': {
+                'connect_timeout': 10,
+            },
+            'TEST': {
+                'NAME': 'test_vendly_db',
+            },
+        }
+    }
 
 # ─── Auth User Model ───────────────────────────────────────────────────────────
 AUTH_USER_MODEL = 'accounts.User'
@@ -131,28 +154,44 @@ AUTH_PASSWORD_VALIDATORS = [
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://redis:6379/0')
 
 # ─── Django Channels (WebSocket) ───────────────────────────────────────────────
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            'hosts': [REDIS_URL],
-            'capacity': 1500,
-            'expiry': 10,
-        },
+if USE_INMEMORY_CHANNEL_LAYER:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        }
     }
-}
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                'hosts': [REDIS_URL],
+                'capacity': 1500,
+                'expiry': 10,
+            },
+        }
+    }
 
 # ─── Cache ─────────────────────────────────────────────────────────────────────
-CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': REDIS_URL,
-        'OPTIONS': {
-            'CONNECTION_POOL_KWARGS': {'max_connections': 50},
-        },
-        'TIMEOUT': 300,
+if USE_LOCMEM_CACHE:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'vendly-local-cache',
+            'TIMEOUT': 300,
+        }
     }
-}
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'CONNECTION_POOL_KWARGS': {'max_connections': 50},
+            },
+            'TIMEOUT': 300,
+        }
+    }
 
 # ─── Celery ────────────────────────────────────────────────────────────────────
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', REDIS_URL)
@@ -167,6 +206,8 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 300       # 5 min hard limit
 CELERY_TASK_SOFT_TIME_LIMIT = 240  # 4 min soft limit
 CELERY_WORKER_MAX_TASKS_PER_CHILD = 500  # Mitigate memory leaks
+CELERY_TASK_ALWAYS_EAGER = CELERY_TASK_ALWAYS_EAGER
+CELERY_TASK_EAGER_PROPAGATES = CELERY_TASK_ALWAYS_EAGER
 CELERY_TASK_ROUTES = {
     'tasks.ai_tasks.*': {'queue': 'ai'},
     'tasks.channel_tasks.*': {'queue': 'channels'},
@@ -259,6 +300,20 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
     'x-organization-id',
 ]
+
+CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_HTTPONLY = True
+SESSION_COOKIE_HTTPONLY = True
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+REFERRER_POLICY = 'strict-origin-when-cross-origin'
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'False').lower() in ('1', 'true', 'yes') if not DEBUG else False
+SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '31536000' if not DEBUG else '0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+SECURE_HSTS_PRELOAD = not DEBUG
 
 # ─── Static & Media ────────────────────────────────────────────────────────────
 STATIC_URL = '/static/'
@@ -377,6 +432,7 @@ LOGGING = {
             'maxBytes': 20 * 1024 * 1024,
             'backupCount': 7,
             'formatter': 'json_formatter',
+            'delay': True,  # avoids Windows file-lock error on rotation
         },
         'error_file': {
             'class': 'logging.handlers.RotatingFileHandler',
@@ -385,6 +441,7 @@ LOGGING = {
             'backupCount': 5,
             'formatter': 'json_formatter',
             'level': 'ERROR',
+            'delay': True,  # avoids Windows file-lock error on rotation
         },
     },
     'root': {
@@ -423,11 +480,14 @@ structlog.configure(
 # ─── AI / LLM ──────────────────────────────────────────────────────────────────
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4o')
+OPENAI_ROUTER_MODEL = os.environ.get('OPENAI_ROUTER_MODEL', 'gpt-4.1-nano')
+OPENAI_SALES_MODEL = os.environ.get('OPENAI_SALES_MODEL', os.environ.get('OPENAI_MODEL', 'gpt-4o'))
 OPENAI_EMBEDDING_MODEL = os.environ.get('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small')
 
 # ─── WhatsApp / Meta ───────────────────────────────────────────────────────────
 META_APP_ID = os.environ.get('META_APP_ID', '')
 META_APP_SECRET = os.environ.get('META_APP_SECRET', '')
+META_EMBEDDED_SIGNUP_CONFIG_ID = os.environ.get('META_EMBEDDED_SIGNUP_CONFIG_ID', '')
 WHATSAPP_VERIFY_TOKEN = os.environ.get('WHATSAPP_VERIFY_TOKEN', 'vendly_verify_2026')
 WHATSAPP_ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN', '')
 WHATSAPP_API_VERSION = os.environ.get('WHATSAPP_API_VERSION', 'v19.0')

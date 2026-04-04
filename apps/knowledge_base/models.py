@@ -13,6 +13,22 @@ class KBArticle(models.Model):
         ('archived', 'Archived'),
     ]
 
+    # Purpose controls how the Sales Agent uses this article.
+    # faq          → general Q&A, always injected in snapshots
+    # objection    → how to handle specific buyer objections (pulled on checkout_blocked / lost stages)
+    # closing      → closing language / techniques (pulled on intent_to_buy / follow_up stages)
+    # brand_voice  → on-brand example responses (pulled every message alongside faq)
+    # policy       → business policies — payments, returns, shipping (pulled when customer asks)
+    # product_context → deep product knowledge (pulled on considering stage)
+    PURPOSE_CHOICES = [
+        ('faq', 'FAQ General'),
+        ('objection', 'Manejo de Objeción'),
+        ('closing', 'Técnica de Cierre'),
+        ('brand_voice', 'Voz de Marca'),
+        ('policy', 'Política del Negocio'),
+        ('product_context', 'Contexto de Producto'),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
         'accounts.Organization', on_delete=models.CASCADE, related_name='kb_articles'
@@ -24,6 +40,7 @@ class KBArticle(models.Model):
     title = models.CharField(max_length=300)
     content = models.TextField()
     category = models.CharField(max_length=100, blank=True)
+    purpose = models.CharField(max_length=30, choices=PURPOSE_CHOICES, default='faq', blank=True)
     tags = models.JSONField(default=list, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
     visits = models.PositiveIntegerField(default=0)
@@ -41,6 +58,7 @@ class KBArticle(models.Model):
         indexes = [
             models.Index(fields=['organization', 'status']),
             models.Index(fields=['organization', 'category']),
+            models.Index(fields=['organization', 'purpose']),
         ]
 
     def __str__(self):

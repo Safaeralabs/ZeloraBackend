@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -31,11 +32,12 @@ class CampaignViewSet(OrgScopedMixin, viewsets.ModelViewSet):
                 {'error': 'Campaign already sent'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        campaign.status = 'sending'
-        campaign.save(update_fields=['status'])
         try:
             from tasks.campaign_tasks import send_campaign
-            send_campaign.delay(str(campaign.id))
+            if getattr(settings, 'ENABLE_REAL_WHATSAPP', False):
+                send_campaign.delay(str(campaign.id))
+            else:
+                send_campaign(str(campaign.id))
         except Exception:
             pass
         return Response({'status': 'sending'})

@@ -4,8 +4,8 @@ from .models import KBArticle, KBDocument
 
 @admin.register(KBArticle)
 class KBArticleAdmin(admin.ModelAdmin):
-    list_display = ['title', 'category', 'status', 'visits', 'organization', 'updated_at']
-    list_filter = ['status', 'category', 'organization']
+    list_display = ['title', 'category', 'purpose', 'status', 'visits', 'organization', 'updated_at']
+    list_filter = ['status', 'category', 'purpose', 'organization']
     search_fields = ['title', 'content']
     readonly_fields = ['id', 'visits', 'created_at', 'updated_at']
 

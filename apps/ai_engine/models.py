@@ -145,6 +145,82 @@ class AIInsight(models.Model):
         return f'[{self.severity.upper()}] {self.title}'
 
 
+class SalesAgentLog(models.Model):
+    """
+    Structured audit log for every Sales Agent invocation.
+    Captures funnel stage, decision, actions and context used.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        'accounts.Organization', on_delete=models.CASCADE, related_name='sales_agent_logs'
+    )
+    conversation = models.ForeignKey(
+        'conversations.Conversation', on_delete=models.CASCADE, related_name='sales_agent_logs'
+    )
+    stage = models.CharField(max_length=30)
+    confidence = models.FloatField(default=0.0)
+    decision = models.CharField(max_length=30)
+    handoff_needed = models.BooleanField(default=False)
+    handoff_reason = models.CharField(max_length=200, blank=True)
+    products_shown = models.JSONField(default=list)
+    recommended_actions = models.JSONField(default=list)
+    context_used = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'sales_agent_logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'stage']),
+            models.Index(fields=['conversation']),
+        ]
+
+    def __str__(self):
+        return f'[{self.stage}] {self.decision} @ {str(self.conversation_id)[:8]}'
+
+
+class AIAgent(models.Model):
+    """
+    Configurable AI functional agent scoped to an organization.
+    Represents a specialized business role (sales, marketing, operations)
+    that the AI Router can activate per conversation context.
+    """
+    AGENT_TYPE_CHOICES = [
+        ('sales', 'Sales Agent'),
+        ('marketing', 'Marketing Agent'),
+        ('operations', 'Operations Agent'),
+        ('support', 'Support Agent'),
+    ]
+    PROVIDER_CHOICES = [
+        ('openai', 'OpenAI'),
+        ('claude', 'Claude'),
+        ('heuristic', 'Heuristic'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        'accounts.Organization', on_delete=models.CASCADE, related_name='ai_agents'
+    )
+    agent_type = models.CharField(max_length=20, choices=AGENT_TYPE_CHOICES)
+    name = models.CharField(max_length=200)
+    is_active = models.BooleanField(default=True)
+    provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES, default='openai')
+    model = models.CharField(max_length=100, default='gpt-4o-mini')
+    system_prompt = models.TextField(blank=True)
+    tools = models.JSONField(default=list, blank=True)
+    config = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ai_agents'
+        unique_together = ['organization', 'agent_type']
+        ordering = ['agent_type']
+
+    def __str__(self):
+        return f'{self.get_agent_type_display()} — {self.organization}'
+
+
 class AIPerformanceLog(models.Model):
     """
     Tracks AI model performance metrics over time.
@@ -170,3 +246,40 @@ class AIPerformanceLog(models.Model):
         db_table = 'ai_performance_logs'
         unique_together = ['organization', 'date', 'model_name']
         ordering = ['-date']
+
+
+class OpenAIUsageLog(models.Model):
+    """
+    Per-call OpenAI usage log: tokens, cost, latency, feature.
+    Used to track spend and debug performance per feature.
+    """
+    FEATURE_CHOICES = [
+        ('sales_agent', 'Sales Agent'),
+        ('learning', 'Learning Engine'),
+        ('style_extraction', 'Style Extraction'),
+        ('embedding', 'Embedding'),
+        ('playbook_synthesis', 'Playbook Synthesis'),
+        ('direct_reply', 'Direct Reply'),
+        ('other', 'Other'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        'accounts.Organization', on_delete=models.CASCADE, related_name='openai_usage_logs'
+    )
+    feature = models.CharField(max_length=40, choices=FEATURE_CHOICES, default='other', db_index=True)
+    model_name = models.CharField(max_length=100)
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    cost_usd = models.DecimalField(max_digits=10, decimal_places=6, default=0)
+    latency_ms = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'openai_usage_logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', 'created_at']),
+            models.Index(fields=['organization', 'feature', 'created_at']),
+        ]

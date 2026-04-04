@@ -9,7 +9,7 @@ Django==5.0.6
 djangorestframework==3.15.2
 
 # ─── WebSockets / ASGI ─────────────────────────────────────────────────────────
-django-channels[daphne]==4.1.0
+channels[daphne]==4.1.0
 channels-redis==4.2.0
 daphne==4.1.2
 

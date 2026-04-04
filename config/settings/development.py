@@ -1,6 +1,8 @@
 """
 Development settings — DEBUG on, relaxed security, console logging.
 """
+import os
+
 from .base import *  # noqa: F401, F403
 
 DEBUG = True
@@ -40,5 +42,5 @@ SIMPLE_JWT = {  # noqa: F405
 CORS_ALLOW_ALL_ORIGINS = True
 
 # ─── Feature flags: enable AI copilot in dev ────────────────────────────────────
-ENABLE_REAL_AI = False
-DEMO_MODE = True
+ENABLE_REAL_AI = os.environ.get('ENABLE_REAL_AI', 'False').lower() in ('1', 'true', 'yes')
+DEMO_MODE = os.environ.get('DEMO_MODE', 'True').lower() in ('1', 'true', 'yes')

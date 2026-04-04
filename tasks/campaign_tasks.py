@@ -7,6 +7,7 @@ Campaign Celery tasks:
 """
 import structlog
 from celery import shared_task, chord
+from django.conf import settings
 from django.utils import timezone
 
 logger = structlog.get_logger(__name__)
@@ -82,13 +83,15 @@ def launch_campaign(self, campaign_id: str) -> dict:
             for i in range(0, len(contact_ids), BATCH_SIZE)
         ]
 
-        batch_tasks = [
-            send_campaign_batch.s(str(campaign_id), batch)
-            for batch in batches
-        ]
-
-        # Chord: run all batch tasks in parallel, then call finalize_campaign
-        chord(batch_tasks)(finalize_campaign.s(str(campaign_id)))
+        if getattr(settings, 'ENABLE_REAL_WHATSAPP', False):
+            batch_tasks = [
+                send_campaign_batch.s(str(campaign_id), batch)
+                for batch in batches
+            ]
+            chord(batch_tasks)(finalize_campaign.s(str(campaign_id)))
+        else:
+            results = [send_campaign_batch(str(campaign_id), batch) for batch in batches]
+            finalize_campaign(results, str(campaign_id))
 
         # Update total recipients
         campaign.total_recipients = len(contact_ids)
@@ -166,11 +169,15 @@ def send_campaign_batch(self, campaign_id: str, contact_ids: list) -> dict:
                 from tasks.channel_tasks import send_whatsapp_message
                 # Personalise message with contact name
                 personalised = message_text.replace('{{nombre}}', contact.nombre or '')
-                send_whatsapp_message.delay(
-                    phone=contact.telefono,
-                    message=personalised,
-                    org_id=str(campaign.organization_id),
-                )
+                task_kwargs = {
+                    'phone': contact.telefono,
+                    'message': personalised,
+                    'org_id': str(campaign.organization_id),
+                }
+                if getattr(settings, 'ENABLE_REAL_WHATSAPP', False):
+                    send_whatsapp_message.delay(**task_kwargs)
+                else:
+                    send_whatsapp_message(**task_kwargs)
                 sent += 1
 
             elif campaign.channel == 'email' and contact.email:

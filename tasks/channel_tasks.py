@@ -7,12 +7,17 @@ Channel-specific Celery tasks:
 import structlog
 import httpx
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
 
 logger = structlog.get_logger(__name__)
 
-WHATSAPP_API_VERSION = 'v19.0'
-WHATSAPP_BASE_URL = 'https://graph.facebook.com'
+WHATSAPP_API_VERSION = getattr(settings, 'WHATSAPP_API_VERSION', 'v19.0')
+WHATSAPP_BASE_URL = getattr(settings, 'WHATSAPP_BASE_URL', 'https://graph.facebook.com')
+
+
+def normalize_phone(phone: str) -> str:
+    return ''.join(char for char in (phone or '') if char.isdigit())
 
 
 @shared_task(
@@ -56,8 +61,37 @@ def send_whatsapp_message(
         creds = cfg.credentials
         api_token = creds.get('api_token') or creds.get('access_token', '')
         phone_number_id = creds.get('phone_number_id', '')
+        normalized_phone = normalize_phone(phone)
 
-        if not api_token or not phone_number_id:
+        if not phone_number_id or not normalized_phone:
+            raise ValueError(f'WhatsApp credentials incomplete for org {org_id}')
+
+        if not getattr(settings, 'ENABLE_REAL_WHATSAPP', False):
+            wa_msg_id = f'sim-{timezone.now().timestamp()}'
+            if conv_id:
+                try:
+                    from apps.conversations.models import Message
+                    outbound_message = Message.objects.filter(
+                        conversation_id=conv_id,
+                        role='agent',
+                    ).order_by('-timestamp').first()
+                    if outbound_message and not outbound_message.external_id:
+                        outbound_message.external_id = wa_msg_id
+                        outbound_message.metadata = {
+                            **(outbound_message.metadata or {}),
+                            'channel': 'whatsapp',
+                            'direction': 'outbound',
+                            'wa_id': wa_msg_id,
+                            'delivery_status': 'simulated',
+                        }
+                        outbound_message.save(update_fields=['external_id', 'metadata'])
+                except Exception:
+                    logger.warning('whatsapp_outbound_message_update_failed', conv_id=conv_id)
+
+            logger.info('whatsapp_sent_simulated', org_id=org_id, conv_id=conv_id, phone=normalized_phone[-4:])
+            return {'status': 'ok', 'wa_message_id': wa_msg_id, 'simulated': True}
+
+        if not api_token:
             raise ValueError(f'WhatsApp credentials incomplete for org {org_id}')
 
         url = f'{WHATSAPP_BASE_URL}/{WHATSAPP_API_VERSION}/{phone_number_id}/messages'
@@ -67,7 +101,7 @@ def send_whatsapp_message(
         }
         payload = {
             'messaging_product': 'whatsapp',
-            'to': phone,
+            'to': normalized_phone,
             'type': 'text',
             'text': {'body': message, 'preview_url': False},
         }
@@ -79,9 +113,28 @@ def send_whatsapp_message(
 
         wa_msg_id = data.get('messages', [{}])[0].get('id', '')
 
+        if conv_id and wa_msg_id:
+            try:
+                from apps.conversations.models import Message
+                outbound_message = Message.objects.filter(
+                    conversation_id=conv_id,
+                    role='agent',
+                ).order_by('-timestamp').first()
+                if outbound_message and not outbound_message.external_id:
+                    outbound_message.external_id = wa_msg_id
+                    outbound_message.metadata = {
+                        **(outbound_message.metadata or {}),
+                        'channel': 'whatsapp',
+                        'direction': 'outbound',
+                        'wa_id': wa_msg_id,
+                    }
+                    outbound_message.save(update_fields=['external_id', 'metadata'])
+            except Exception:
+                logger.warning('whatsapp_outbound_message_update_failed', conv_id=conv_id)
+
         logger.info(
             'whatsapp_sent',
-            phone=phone[-4:],  # Log only last 4 digits for PII safety
+            phone=normalized_phone[-4:],  # Log only last 4 digits for PII safety
             org_id=org_id,
             wa_msg_id=wa_msg_id,
             conv_id=conv_id,
@@ -162,10 +215,26 @@ def _process_whatsapp_webhook(payload: dict, org) -> dict:
         for entry in entries:
             for change in entry.get('changes', []):
                 value = change.get('value', {})
+                statuses = value.get('statuses', [])
                 messages = value.get('messages', [])
 
+                for status_data in statuses:
+                    wa_msg_id = status_data.get('id', '')
+                    delivery_status = status_data.get('status', '')
+                    if not wa_msg_id:
+                        continue
+                    outbound_message = Message.objects.filter(external_id=wa_msg_id).first()
+                    if not outbound_message:
+                        continue
+                    outbound_message.metadata = {
+                        **(outbound_message.metadata or {}),
+                        'delivery_status': delivery_status,
+                        'status_timestamp': status_data.get('timestamp'),
+                    }
+                    outbound_message.save(update_fields=['metadata'])
+
                 for msg_data in messages:
-                    phone = msg_data.get('from', '')
+                    phone = normalize_phone(msg_data.get('from', ''))
                     msg_type = msg_data.get('type', 'text')
                     wa_msg_id = msg_data.get('id', '')
 
@@ -188,7 +257,7 @@ def _process_whatsapp_webhook(payload: dict, org) -> dict:
                         continue
 
                     # Deduplication
-                    if wa_msg_id and Message.objects.filter(metadata__wa_id=wa_msg_id).exists():
+                    if wa_msg_id and Message.objects.filter(external_id=wa_msg_id).exists():
                         logger.debug('webhook_duplicate_msg', wa_msg_id=wa_msg_id)
                         continue
 
@@ -199,6 +268,7 @@ def _process_whatsapp_webhook(payload: dict, org) -> dict:
                         defaults={
                             'nombre': phone,
                             'apellido': '',
+                            'canal': 'whatsapp',
                         },
                     )
 
@@ -206,23 +276,48 @@ def _process_whatsapp_webhook(payload: dict, org) -> dict:
                     conv = _get_or_create_open_conversation(org, contact, 'whatsapp')
 
                     # Save incoming message
-                    Message.objects.create(
+                    inbound_message = Message.objects.create(
                         conversation=conv,
                         role='user',
                         content=text,
-                        metadata={'wa_id': wa_msg_id, 'channel': 'whatsapp', 'msg_type': msg_type},
+                        external_id=wa_msg_id,
+                        metadata={'wa_id': wa_msg_id, 'channel': 'whatsapp', 'msg_type': msg_type, 'direction': 'inbound'},
                     )
 
+                    conv.last_message_at = inbound_message.timestamp
                     conv.updated_at = timezone.now()
-                    conv.save(update_fields=['updated_at'])
+                    conv.save(update_fields=['last_message_at', 'updated_at'])
 
-                    # Trigger AI bot response
+                    # Run AI Router pipeline and generate bot reply
+                    bot_reply_text = None
                     try:
-                        from tasks.ai_tasks import generate_bot_response
-                        generate_bot_response.delay(str(conv.id), text)
-                    except Exception as e:
-                        logger.warning('bot_response_trigger_error', error=str(e))
+                        from apps.ai_router.handler import handle_inbound_message
+                        bot_reply_text, decision = handle_inbound_message(
+                            conversation=conv,
+                            message=inbound_message,
+                            organization=org,
+                        )
+                    except Exception as router_err:
+                        logger.warning('router_handler_failed', error=str(router_err))
 
+                    if bot_reply_text:
+                        bot_msg = Message.objects.create(
+                            conversation=conv,
+                            role='bot',
+                            content=bot_reply_text,
+                            metadata={'generated_by': 'ai_router', 'channel': 'whatsapp'},
+                        )
+                        conv.last_message_at = bot_msg.timestamp
+                        conv.save(update_fields=['last_message_at', 'updated_at'])
+
+                        # Send reply back via WhatsApp
+                        if phone and getattr(settings, 'ENABLE_REAL_WHATSAPP', False):
+                            try:
+                                send_whatsapp_message.delay(
+                                    phone, bot_reply_text, str(org.id), str(conv.id)
+                                )
+                            except Exception as wa_err:
+                                logger.warning('whatsapp_bot_reply_send_failed', error=str(wa_err))
                     # Broadcast to agents
                     _broadcast_new_message_event(org.id, conv.id)
                     processed += 1
@@ -306,7 +401,7 @@ def sync_whatsapp_templates(org_id: str) -> dict:
             is_active=True,
         )
         creds = cfg.credentials
-        api_token = creds.get('api_token', '')
+        api_token = creds.get('api_token') or creds.get('access_token', '')
         waba_id = creds.get('waba_id', '')
 
         if not api_token or not waba_id:

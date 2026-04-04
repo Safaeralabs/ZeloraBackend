@@ -12,9 +12,8 @@ from django.utils import timezone
 from core.permissions import IsOrganizationMember, IsOrganizationAdmin
 from core.mixins import OrgScopedMixin
 
-from .models import AIMemoryEntry, AITask, AIInsight, AIPerformanceLog
+from .models import AITask, AIInsight, AIPerformanceLog
 from .serializers import (
-    AIMemoryEntrySerializer,
     AITaskSerializer,
     AIInsightSerializer,
     AIPerformanceLogSerializer,
@@ -240,19 +239,6 @@ class QAScoreView(APIView):
             return Response({'status': 'queued', 'note': 'Task queued (Celery may be starting)'})
 
 
-# ─── AI Memory ViewSet ─────────────────────────────────────────────────────────
-
-class AIMemoryViewSet(OrgScopedMixin, viewsets.ModelViewSet):
-    """CRUD for AI memory entries scoped to the organization."""
-    permission_classes = [IsOrganizationAdmin]
-    serializer_class = AIMemoryEntrySerializer
-    filterset_fields = ['memory_type', 'is_active']
-    search_fields = ['key', 'value']
-
-    def get_queryset(self):
-        return AIMemoryEntry.objects.filter(organization=self.request.user.organization)
-
-
 # ─── AI Tasks ViewSet ──────────────────────────────────────────────────────────
 
 class AITaskViewSet(OrgScopedMixin, viewsets.ReadOnlyModelViewSet):
@@ -317,3 +303,5 @@ class AIPerformanceViewSet(OrgScopedMixin, viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         return AIPerformanceLog.objects.filter(organization=self.request.user.organization)
+
+

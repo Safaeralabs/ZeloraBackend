@@ -2,14 +2,11 @@
 JWT WebSocket Authentication Middleware.
 
 Authenticates WebSocket connections by reading a JWT token from:
-  1. Query param: ?token=<access_token>
-  2. Subprotocol header (secondary fallback)
+  1. WebSocket subprotocol: "vendly-jwt.<access_token>"
 
 Usage in asgi.py:
     JWTAuthMiddlewareStack(URLRouter(websocket_urlpatterns))
 """
-from urllib.parse import parse_qs
-
 from channels.db import database_sync_to_async
 from channels.middleware import BaseMiddleware
 from django.contrib.auth.models import AnonymousUser
@@ -56,13 +53,16 @@ class JWTAuthMiddleware(BaseMiddleware):
     """
 
     async def __call__(self, scope, receive, send):
-        # Extract token from query string: ws://host/ws/inbox/?token=xxx
-        query_string = scope.get('query_string', b'').decode()
-        params = parse_qs(query_string)
-        token_list = params.get('token', [])
+        token = None
 
-        if token_list:
-            scope['user'] = await _get_user_from_token(token_list[0])
+        subprotocols = scope.get('subprotocols') or []
+        for protocol in subprotocols:
+            if isinstance(protocol, str) and protocol.startswith('vendly-jwt.'):
+                token = protocol.removeprefix('vendly-jwt.')
+                break
+
+        if token:
+            scope['user'] = await _get_user_from_token(token)
         else:
             scope['user'] = AnonymousUser()
 

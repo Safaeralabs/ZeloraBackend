@@ -1,13 +1,5 @@
 from django.contrib import admin
-from .models import AIMemoryEntry, AITask, AIInsight, AIPerformanceLog
-
-
-@admin.register(AIMemoryEntry)
-class AIMemoryEntryAdmin(admin.ModelAdmin):
-    list_display = ['key', 'memory_type', 'confidence', 'is_active', 'organization', 'updated_at']
-    list_filter = ['memory_type', 'is_active', 'organization']
-    search_fields = ['key', 'value']
-    readonly_fields = ['id', 'created_at', 'updated_at']
+from .models import AIAgent, AITask, AIInsight, AIPerformanceLog, SalesAgentLog
 
 
 @admin.register(AITask)
@@ -31,3 +23,18 @@ class AIPerformanceLogAdmin(admin.ModelAdmin):
     list_display = ['organization', 'date', 'model_name', 'total_calls', 'bot_resolution_rate']
     list_filter = ['model_name', 'organization']
     date_hierarchy = 'date'
+
+
+@admin.register(SalesAgentLog)
+class SalesAgentLogAdmin(admin.ModelAdmin):
+    list_display = ['stage', 'decision', 'confidence', 'handoff_needed', 'organization', 'created_at']
+    list_filter = ['stage', 'decision', 'handoff_needed', 'organization']
+    readonly_fields = ['id', 'products_shown', 'recommended_actions', 'context_used', 'created_at']
+
+
+@admin.register(AIAgent)
+class AIAgentAdmin(admin.ModelAdmin):
+    list_display = ['name', 'agent_type', 'provider', 'model', 'is_active', 'organization', 'created_at']
+    list_filter = ['agent_type', 'provider', 'is_active']
+    search_fields = ['name', 'system_prompt']
+    readonly_fields = ['id', 'created_at', 'updated_at']

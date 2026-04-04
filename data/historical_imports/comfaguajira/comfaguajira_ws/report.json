@@ -1,0 +1,71 @@
+{
+  "sessions": 1340,
+  "router_examples": 3141,
+  "eval_examples": 2814,
+  "topics": [
+    [
+      "general",
+      840
+    ],
+    [
+      "subsidio_monetario",
+      218
+    ],
+    [
+      "afiliaciones",
+      190
+    ],
+    [
+      "educacion",
+      28
+    ],
+    [
+      "certificados",
+      27
+    ],
+    [
+      "medio_de_pago",
+      16
+    ],
+    [
+      "vivienda",
+      8
+    ],
+    [
+      "recreacion_turismo",
+      7
+    ],
+    [
+      "credito_social",
+      6
+    ]
+  ],
+  "route_hints": [
+    [
+      "operations",
+      1333
+    ],
+    [
+      "sales",
+      7
+    ]
+  ],
+  "stages": [
+    [
+      "resolved",
+      947
+    ],
+    [
+      "in_progress",
+      232
+    ],
+    [
+      "unanswered",
+      94
+    ],
+    [
+      "unknown",
+      67
+    ]
+  ]
+}

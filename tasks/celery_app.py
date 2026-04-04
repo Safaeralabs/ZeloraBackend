@@ -38,6 +38,21 @@ def setup_periodic_tasks(sender, **kwargs):
         name='generate-daily-insights',
     )
 
+    # Learning Engine sweep — every 6 hours, picks up inactive/escalated conversations
+    from apps.ai_engine.tasks import sweep_inactive_conversations_task, synthesize_all_orgs_playbooks_task
+    sender.add_periodic_task(
+        crontab(minute=0, hour='*/6'),
+        sweep_inactive_conversations_task.s(),
+        name='learning-engine-sweep',
+    )
+
+    # Playbook synthesis — every Monday at 03:00, rebuilds agent config from KB for all orgs
+    sender.add_periodic_task(
+        crontab(hour=3, minute=0, day_of_week=1),
+        synthesize_all_orgs_playbooks_task.s(),
+        name='kb-playbook-synthesis-weekly',
+    )
+
 
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):

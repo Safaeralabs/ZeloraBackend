@@ -1,5 +1,6 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from .models import Product, Order, InventoryMovement
 from .serializers import ProductSerializer, OrderSerializer, InventoryMovementSerializer
@@ -10,23 +11,76 @@ from core.mixins import OrgScopedMixin
 class ProductViewSet(OrgScopedMixin, viewsets.ModelViewSet):
     permission_classes = [IsOrganizationMember]
     serializer_class = ProductSerializer
-    filterset_fields = ['status', 'category', 'is_active']
-    search_fields = ['title', 'brand', 'category']
+    filterset_fields = ['status', 'category', 'is_active', 'offer_type', 'price_type']
+    search_fields = ['title', 'brand', 'category', 'description', 'fulfillment_notes']
 
     def get_queryset(self):
         return Product.objects.filter(
             organization=self.request.user.organization
         ).prefetch_related('variants')
 
+    def perform_create(self, serializer):
+        serializer.save(organization=self.request.user.organization)
+
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path=r'public/(?P<org_slug>[^/.]+)',
+        permission_classes=[AllowAny],
+        authentication_classes=[],
+    )
+    def public_list(self, request, org_slug=None):
+        from apps.accounts.models import Organization
+
+        organization = Organization.objects.filter(slug=org_slug, is_active=True).first()
+        if organization is None:
+            return Response({'detail': 'Marca no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+
+        products = Product.objects.filter(
+            organization=organization,
+            is_active=True,
+            status='active',
+        ).prefetch_related('variants').order_by('-updated_at', '-created_at')[:12]
+
+        return Response(ProductSerializer(products, many=True).data)
+
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path=r'public/(?P<org_slug>[^/.]+)/(?P<product_id>[^/.]+)',
+        permission_classes=[AllowAny],
+        authentication_classes=[],
+    )
+    def public_detail(self, request, org_slug=None, product_id=None):
+        from apps.accounts.models import Organization
+
+        organization = Organization.objects.filter(slug=org_slug, is_active=True).first()
+        if organization is None:
+            return Response({'detail': 'Marca no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+
+        product = Product.objects.filter(
+            organization=organization,
+            id=product_id,
+            is_active=True,
+            status='active',
+        ).prefetch_related('variants').first()
+        if product is None:
+            return Response({'detail': 'Producto no disponible.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(ProductSerializer(product).data)
+
 
 class OrderViewSet(OrgScopedMixin, viewsets.ModelViewSet):
     permission_classes = [IsOrganizationMember]
     serializer_class = OrderSerializer
-    filterset_fields = ['status', 'channel']
-    search_fields = ['customer_name']
+    filterset_fields = ['status', 'channel', 'order_kind']
+    search_fields = ['customer_name', 'notes', 'service_location']
 
     def get_queryset(self):
         return Order.objects.filter(organization=self.request.user.organization)
+
+    def perform_create(self, serializer):
+        serializer.save(organization=self.request.user.organization)
 
     @action(detail=True, methods=['post'])
     def ship(self, request, pk=None):
