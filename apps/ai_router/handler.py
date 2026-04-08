@@ -36,6 +36,33 @@ def _conversation_is_human_owned(conversation) -> bool:
     return operator_state.get('owner') == 'humano'
 
 
+def _active_ai_agent(conversation) -> str | None:
+    metadata = getattr(conversation, 'metadata', None) or {}
+    operator_state = (metadata.get('operator_state') or {})
+    active_agent = operator_state.get('active_ai_agent')
+    if active_agent in {'general', 'sales', 'marketing', 'operations'}:
+        return active_agent
+    return None
+
+
+def _load_agent_capabilities(organization) -> dict:
+    from apps.channels_config.models import ChannelConfig
+
+    config = ChannelConfig.objects.filter(organization=organization, channel='onboarding').first()
+    settings_payload = (config.settings if config else {}) or {}
+    ai_preferences = settings_payload.get('ai_preferences') or {}
+    general_preferences = ai_preferences.get('general_agent') or {}
+    sales_preferences = ai_preferences.get('sales_agent') or {}
+    is_trial = bool(general_preferences.get('trial_mode', organization.plan == 'pilot'))
+    general_enabled = bool(general_preferences.get('enabled', True))
+    sales_enabled = bool(sales_preferences.get('enabled', not is_trial)) and not is_trial
+    return {
+        'trial_mode': is_trial,
+        'general_enabled': general_enabled,
+        'sales_enabled': sales_enabled,
+    }
+
+
 def handle_inbound_message(
     *,
     conversation,
@@ -55,6 +82,7 @@ def handle_inbound_message(
         bot_reply_text may be None if the route produces no reply (e.g. silent escalation).
     """
     try:
+        agent_capabilities = _load_agent_capabilities(organization)
         raw_event = {
             'tenant_id': str(organization.id),
             'channel': conversation.canal,
@@ -64,7 +92,11 @@ def handle_inbound_message(
             'message_text': message.content,
             'language': 'es',
             'timestamp': datetime.now(timezone.utc).isoformat(),
-            'metadata': {'canal': conversation.canal},
+            'metadata': {
+                'canal': conversation.canal,
+                'agent_capabilities': agent_capabilities,
+                'active_ai_agent': _active_ai_agent(conversation),
+            },
         }
 
         router = build_ai_router_service()
@@ -130,6 +162,8 @@ def _execute_decision(
         executor = BlockExecutor()
     elif route == RouteType.ESCALATE_TO_HUMAN:
         executor = EscalateExecutor()
+    elif route == RouteType.ROUTE_TO_GENERAL_AGENT:
+        executor = RouteToAgentExecutor('general')
     elif route == RouteType.ROUTE_TO_SALES_AGENT:
         executor = RouteToAgentExecutor('sales')
     elif route == RouteType.ROUTE_TO_MARKETING_AGENT:

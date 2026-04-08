@@ -27,7 +27,7 @@ from .serializers import (
 from .historical_import import import_historical_chats, list_historical_imports, get_historical_imports_root
 from .kb_seed_import import import_kb_seed_for_organization
 from .learning import approve_learning_candidate, generate_learning_candidates_for_org
-from .document_extraction import approve_document_extraction_candidate, generate_document_extraction_candidates
+from .document_extraction import approve_document_extraction_candidate, generate_document_extraction_candidates, generate_ai_analysis_candidates
 from apps.conversations.models import Conversation
 from apps.ai_engine.models import SalesAgentLog, AITask
 from .models import LearningCandidate, DocumentExtractionCandidate
@@ -166,10 +166,13 @@ class DocumentExtractionCandidateView(APIView):
         queryset = DocumentExtractionCandidate.objects.filter(organization=request.user.organization).order_by('-updated_at')
         kind = request.query_params.get('kind')
         status_value = request.query_params.get('status')
+        source_document = request.query_params.get('source_document')
         if kind:
             queryset = queryset.filter(kind=kind)
         if status_value:
             queryset = queryset.filter(status=status_value)
+        if source_document:
+            queryset = queryset.filter(source_document_id=source_document)
         return Response(DocumentExtractionCandidateSerializer(queryset[:250], many=True).data)
 
     def post(self, request):
@@ -183,14 +186,31 @@ class DocumentExtractionCandidateView(APIView):
         if serializer.validated_data.get('document_id'):
             queryset = queryset.filter(id=serializer.validated_data['document_id'])
 
+        import threading
+
         created = 0
         updated = 0
         processed_documents = 0
         for document in queryset[:25]:
-            result = generate_document_extraction_candidates(document=document)
-            created += result['created']
-            updated += result['updated']
-            processed_documents += result['processed_documents']
+            structural_result: dict = {}
+            ai_result: dict = {}
+
+            def _structural(doc=document):
+                nonlocal structural_result
+                structural_result = generate_document_extraction_candidates(document=doc)
+
+            def _ai(doc=document):
+                nonlocal ai_result
+                ai_result = generate_ai_analysis_candidates(document=doc)
+
+            t1 = threading.Thread(target=_structural, daemon=True)
+            t2 = threading.Thread(target=_ai, daemon=True)
+            t1.start(); t2.start()
+            t1.join(timeout=30); t2.join(timeout=60)
+
+            created += structural_result.get('created', 0) + ai_result.get('created', 0)
+            updated += structural_result.get('updated', 0) + ai_result.get('updated', 0)
+            processed_documents += 1
 
         return Response(
             {'created': created, 'updated': updated, 'processed_documents': processed_documents},

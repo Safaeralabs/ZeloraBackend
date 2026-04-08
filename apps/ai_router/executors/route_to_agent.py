@@ -12,6 +12,11 @@ from .base import BaseExecutor
 logger = structlog.get_logger(__name__)
 
 _DEFAULT_SYSTEM_PROMPTS = {
+    'general': (
+        'Eres un asistente general de marca. '
+        'Respondes preguntas basicas sobre la organizacion, mantienes el scope y orientas al usuario. '
+        'No negocias ni haces cierre comercial agresivo. Maximo 3 oraciones.'
+    ),
     'marketing': (
         'Eres un especialista en marketing digital para e-commerce en LatAm. '
         'Ayudas a identificar oportunidades de venta y comunicar mensajes clave de manera efectiva. '
@@ -25,6 +30,7 @@ _DEFAULT_SYSTEM_PROMPTS = {
 }
 
 _HEURISTIC_REPLIES = {
+    'general': 'Puedo ayudarte con informacion general de la marca, sus servicios y politicas basicas. ¿Que te gustaria saber?',
     'marketing': 'Tenemos novedades especiales disponibles. ¿Quieres que te cuente sobre nuestras promociones actuales?',
     'operations': 'Puedo revisar el estado de tu pedido. ¿Me puedes compartir tu número de orden o cédula?',
 }
@@ -35,6 +41,13 @@ class RouteToAgentExecutor(BaseExecutor):
         self.agent_type = agent_type
 
     def execute(self, *, conversation, message, decision, organization) -> str | None:
+        if self.agent_type == 'general':
+            return self._run_general_agent(
+                conversation=conversation,
+                message=message,
+                decision=decision,
+                organization=organization,
+            )
         if self.agent_type == 'sales':
             return self._run_sales_agent(
                 conversation=conversation,
@@ -50,6 +63,40 @@ class RouteToAgentExecutor(BaseExecutor):
         )
 
     # ── Sales Agent ────────────────────────────────────────────────────────────
+
+    def _run_general_agent(self, *, conversation, message, decision, organization) -> str | None:
+        from apps.ai_engine.general_agent import GeneralAgent
+        from apps.conversations.models import TimelineEvent
+
+        TimelineEvent.objects.create(
+            conversation=conversation,
+            tipo='handoff',
+            descripcion='Derivado a General Agent',
+            metadata={'agent_type': 'general', 'decision_id': decision.decision_id},
+        )
+
+        try:
+            result = GeneralAgent().run(
+                message_text=message.content,
+                conversation=conversation,
+                organization=organization,
+                router_decision=decision,
+            )
+            metadata = {**(conversation.metadata or {})}
+            metadata['general_state'] = {
+                'intent': result.intent,
+                'out_of_scope': result.out_of_scope,
+                'agent': result.agent,
+            }
+            operator_state = {**(metadata.get('operator_state') or {})}
+            operator_state['active_ai_agent'] = 'general'
+            metadata['operator_state'] = operator_state
+            conversation.metadata = metadata
+            conversation.save(update_fields=['metadata', 'updated_at'])
+            return result.reply_text or _HEURISTIC_REPLIES['general']
+        except Exception as exc:
+            logger.error('general_agent_error', error=str(exc), exc_info=True)
+            return _HEURISTIC_REPLIES['general']
 
     def _run_sales_agent(self, *, conversation, message, decision, organization) -> str | None:
         from apps.ai_engine.sales_agent import SalesAgent
@@ -130,6 +177,7 @@ class RouteToAgentExecutor(BaseExecutor):
             }
 
             operator_state = {**(metadata.get('operator_state') or {})}
+            operator_state['active_ai_agent'] = 'sales'
             if result.handoff.needed:
                 operator_state['commercial_status'] = 'escalado'
             else:

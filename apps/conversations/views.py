@@ -18,6 +18,7 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_OPERATOR_STATE = {
     'owner': 'ia',
+    'active_ai_agent': '',
     'commercial_status': 'nuevo',
     'priority': 'media',
     'follow_up': False,
@@ -106,6 +107,17 @@ class ConversationViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         if self.action == 'retrieve':
             return ConversationDetailSerializer
         return ConversationListSerializer
+
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """Return conversation counts: total and current calendar month."""
+        now = timezone.now()
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        qs = self.get_queryset()
+        return Response({
+            'this_month': qs.filter(created_at__gte=start_of_month).count(),
+            'total': qs.count(),
+        })
 
     def retrieve(self, request, *args, **kwargs):
         response = super().retrieve(request, *args, **kwargs)

@@ -4,7 +4,7 @@ Accounts serializers — JWT, Organization, User (Agent), Contact.
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
-from .models import Organization, Contact
+from .models import Organization, Contact, SecurityAuditLog
 
 User = get_user_model()
 
@@ -81,6 +81,8 @@ class OnboardingProfileSerializer(serializers.Serializer):
     payment_settings = serializers.JSONField(required=False)
     what_you_sell = serializers.CharField(allow_blank=True, required=False)
     who_you_sell_to = serializers.CharField(allow_blank=True, required=False)
+    general_agent_name = serializers.CharField(allow_blank=True, required=False)
+    general_agent_profile = serializers.JSONField(required=False)
     sales_agent_name = serializers.CharField(allow_blank=True, required=False)
     sales_agent_profile = serializers.JSONField(required=False)
     quick_knowledge_text = serializers.CharField(allow_blank=True, required=False)
@@ -102,6 +104,7 @@ class OnboardingProfileSerializer(serializers.Serializer):
     notification_settings = serializers.JSONField(required=False)
     ai_preferences = serializers.JSONField(required=False)
     optimization_profile = serializers.JSONField(required=False)
+    security_settings = serializers.JSONField(required=False)
     onboarding_status = serializers.CharField(max_length=30, allow_blank=True, required=False)
     completed_step = serializers.IntegerField(min_value=1, max_value=3, required=False)
 
@@ -125,6 +128,8 @@ class OnboardingProfileSerializer(serializers.Serializer):
             'payment_settings': instance.get('payment_settings', {}),
             'what_you_sell': instance.get('what_you_sell', ''),
             'who_you_sell_to': instance.get('who_you_sell_to', ''),
+            'general_agent_name': instance.get('general_agent_name', ''),
+            'general_agent_profile': instance.get('general_agent_profile', {}),
             'sales_agent_name': instance.get('sales_agent_name', ''),
             'sales_agent_profile': instance.get('sales_agent_profile', {}),
             'quick_knowledge_text': instance.get('quick_knowledge_text', ''),
@@ -140,6 +145,7 @@ class OnboardingProfileSerializer(serializers.Serializer):
             'notification_settings': instance.get('notification_settings', {}),
             'ai_preferences': instance.get('ai_preferences', {}),
             'optimization_profile': instance.get('optimization_profile', {}),
+            'security_settings': instance.get('security_settings', {}),
             'onboarding_status': instance.get('onboarding_status', 'draft'),
             'completed_step': instance.get('completed_step', 1),
         }
@@ -247,3 +253,15 @@ class ContactListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Contact
         fields = ['id', 'full_name', 'telefono', 'email', 'tipo', 'canal', 'metadata', 'created_at']
+
+
+# ─── Security Audit Log ─────────────────────────────────────────────────────────
+
+class SecurityAuditLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SecurityAuditLog
+        fields = [
+            'id', 'actor_email', 'event_type', 'event_description',
+            'ip_address', 'user_agent', 'metadata', 'created_at',
+        ]
+        read_only_fields = fields

@@ -96,6 +96,8 @@ class DocumentExtractionCandidateSerializer(serializers.ModelSerializer):
             'pricing_rule': 'kb_pricing',
             'policy': 'kb_policy',
             'flow_hint': 'flow_hint',
+            'ai_summary': 'kb_article',
+            'ai_qa': 'kb_article',
         }.get(obj.kind, 'kb_article')
 
 

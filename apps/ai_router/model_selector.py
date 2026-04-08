@@ -36,6 +36,16 @@ class ModelSelector:
                 reason=f'Standard profile selected for agent handoff in tenant {tenant_id}.',
             )
 
+        if route_name == 'route_to_general_agent':
+            provider = self._providers[ProviderName.OPENAI]
+            profile = ModelProfile.FAST
+            return ModelSelection(
+                profile=profile,
+                provider=provider.provider_name,
+                model_name='gpt-4.1-nano',
+                reason=f'Fast profile selected for general agent in tenant {tenant_id}.',
+            )
+
         if route_name == 'trigger_flow':
             provider = self._providers[ProviderName.OPENAI]
             profile = ModelProfile.FAST

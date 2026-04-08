@@ -222,19 +222,21 @@ class FlowEngine:
                 break
 
             tipo = node.get('tipo', '')
-            data = node.get('data') or {}
+            data = self._node_data(node)
 
             if tipo == 'start':
                 current_id = self._default_next(current_id, edges)
                 continue
 
             if tipo == 'message':
-                replies.append(self._render(data.get('text', ''), context))
+                text = self._render(data['text'], context)
+                if text:
+                    replies.append(text)
                 current_id = self._default_next(current_id, edges)
                 continue
 
-            if tipo == 'action':
-                action_result = self._execute_action(node, variables, context)
+            if tipo in ('action', 'api'):
+                action_result = self._execute_action_data(data, variables, context)
                 if action_result.get('handoff'):
                     return FlowResult(
                         reply_text=self._join(replies),
@@ -249,13 +251,30 @@ class FlowEngine:
                 continue
 
             if tipo == 'condition':
-                condition_met = self._evaluate_condition(node, variables, message_text)
+                condition_met = self._evaluate_condition_data(data, variables, message_text)
                 next_id = self._conditional_next(current_id, 'yes' if condition_met else 'no', edges)
                 current_id = next_id or self._default_next(current_id, edges)
                 continue
 
-            if tipo == 'question':
-                replies.append(self._render(data.get('text', ''), context))
+            if tipo in ('question', 'collect'):
+                text = self._render(data['text'], context)
+                if text:
+                    replies.append(text)
+                return FlowResult(
+                    reply_text=self._join(replies),
+                    variables=variables,
+                    current_node_id=current_id,
+                    flow_name=context['flow_name'],
+                    flow_id=context['flow_id'],
+                ), {'current_node_id': current_id, 'status': 'active', 'variables': variables}
+
+            if tipo == 'quickReply':
+                text = self._render(data['text'], context)
+                options = [str(o) for o in (data.get('options') or [])]
+                if text:
+                    replies.append(text)
+                if options:
+                    replies.append('\n'.join(f'· {o}' for o in options))
                 return FlowResult(
                     reply_text=self._join(replies),
                     variables=variables,
@@ -274,8 +293,44 @@ class FlowEngine:
                     flow_id=context['flow_id'],
                 ), {'current_node_id': current_id, 'status': 'active', 'variables': variables}
 
+            if tipo == 'media':
+                text = self._render(data.get('text') or '', context)
+                if text:
+                    replies.append(text)
+                media_url = data.get('mediaUrl') or ''
+                if media_url:
+                    replies.append(media_url)
+                current_id = self._default_next(current_id, edges)
+                continue
+
+            if tipo == 'delay':
+                # No actual delay in synchronous execution — just advance
+                current_id = self._default_next(current_id, edges)
+                continue
+
+            if tipo == 'tag':
+                tag_value = str(data.get('tagValue') or '')
+                if tag_value:
+                    self._apply_tag(context.get('conversation'), tag_value)
+                current_id = self._default_next(current_id, edges)
+                continue
+
+            if tipo == 'escalate':
+                msg = self._render(data.get('text') or '', context)
+                if msg:
+                    replies.append(msg)
+                return FlowResult(
+                    reply_text=self._join(replies),
+                    handoff=True,
+                    handoff_reason=str(data.get('reason') or 'flow_escalation'),
+                    variables=variables,
+                    current_node_id=current_id,
+                    flow_name=context['flow_name'],
+                    flow_id=context['flow_id'],
+                ), {'current_node_id': current_id, 'status': 'completed', 'variables': variables}
+
             if tipo == 'end':
-                closing = self._render(data.get('message', ''), context)
+                closing = self._render(data.get('message') or data.get('text') or '', context)
                 if closing:
                     replies.append(closing)
                 return FlowResult(
@@ -312,10 +367,10 @@ class FlowEngine:
     ) -> tuple[FlowResult, dict]:
         """Apply user's answer to current_node, store variable, then advance."""
         tipo = current_node.get('tipo', '')
-        data = current_node.get('data') or {}
+        data = self._node_data(current_node)
         current_id = current_node['id']
 
-        if tipo == 'question':
+        if tipo in ('question', 'collect'):
             variable = data.get('variable')
             input_type = data.get('input_type', 'text')
             options = [str(o) for o in (data.get('options') or [])]
@@ -347,8 +402,27 @@ class FlowEngine:
             else:
                 next_id = self._default_next(current_id, edges)
 
+        elif tipo == 'quickReply':
+            variable = data.get('variable')
+            options = [str(o) for o in (data.get('options') or [])]
+            parsed: Any = None
+            if options:
+                parsed = self._parse_input(message_text, 'option', options)
+            if parsed is None:
+                parsed = (message_text or '').strip() or None
+            if variable and parsed:
+                variables[variable] = parsed
+                context['variables'] = variables
+            if options and isinstance(parsed, str):
+                next_id = (
+                    self._conditional_next(current_id, f'option:{parsed}', edges)
+                    or self._default_next(current_id, edges)
+                )
+            else:
+                next_id = self._default_next(current_id, edges)
+
         elif tipo == 'condition':
-            met = self._evaluate_condition(current_node, variables, message_text)
+            met = self._evaluate_condition_data(data, variables, message_text)
             next_id = (
                 self._conditional_next(current_id, 'yes' if met else 'no', edges)
                 or self._default_next(current_id, edges)
@@ -381,6 +455,26 @@ class FlowEngine:
         )
 
     # ── Action execution ──────────────────────────────────────────────────────
+
+    def _execute_action_data(self, data: dict, variables: dict, context: dict) -> dict:
+        """Execute action from already-extracted data dict."""
+        action_type = data.get('action_type', '')
+        payload = data.get('payload') or {}
+
+        if action_type == 'handoff':
+            return {'handoff': True, 'reason': payload.get('reason', 'flow_handoff')}
+
+        if action_type == 'set_variable':
+            key = payload.get('variable')
+            val = payload.get('value')
+            if key:
+                variables[key] = val
+                context['variables'] = variables
+
+        if action_type == 'webhook':
+            self._fire_webhook(payload, variables)
+
+        return {}
 
     def _execute_action(self, node: dict, variables: dict, context: dict) -> dict:
         data = node.get('data') or {}
@@ -427,6 +521,41 @@ class FlowEngine:
         threading.Thread(target=_send, daemon=True).start()
 
     # ── Condition evaluation ──────────────────────────────────────────────────
+
+    def _evaluate_condition_data(self, data: dict, variables: dict, message_text: str) -> bool:
+        """Evaluate condition from already-extracted data dict."""
+        variable = data.get('variable', '')
+        operator = data.get('operator', 'eq')
+        value = str(data.get('value', ''))
+
+        current = str(variables.get(variable, message_text or '')).lower().strip()
+        value_lower = value.lower().strip()
+
+        ops: dict[str, Any] = {
+            'eq': lambda a, b: a == b,
+            'neq': lambda a, b: a != b,
+            'contains': lambda a, b: b in a,
+            'not_contains': lambda a, b: b not in a,
+            'starts_with': lambda a, b: a.startswith(b),
+            'in': lambda a, b: a in [x.strip() for x in b.split(',')],
+        }
+        if operator in ops:
+            return ops[operator](current, value_lower)
+
+        numeric_ops = {'gt': '>', 'lt': '<', 'gte': '>=', 'lte': '<='}
+        if operator in numeric_ops:
+            try:
+                return eval(f'{float(current)} {numeric_ops[operator]} {float(value_lower)}')  # noqa: S307
+            except (ValueError, TypeError):
+                return False
+
+        if operator == 'regex':
+            try:
+                return bool(re.search(value, current))
+            except re.error:
+                return False
+
+        return False
 
     def _evaluate_condition(self, node: dict, variables: dict, message_text: str) -> bool:
         data = node.get('data') or {}
@@ -568,7 +697,52 @@ class FlowEngine:
             'variables': variables,
             'flow_id': flow_id,
             'flow_name': flow_name,
+            'conversation': conversation,
         }
+
+    # ── Node data extraction (supports both nested and legacy flat formats) ────
+
+    def _node_data(self, node: dict) -> dict:
+        """Extract node data supporting both {data:{...}} and legacy flat formats."""
+        nested = node.get('data') or {}
+        def first(*vals):
+            for v in vals:
+                if v is not None and v != '':
+                    return v
+            return None
+
+        return {
+            'text': first(nested.get('text'), node.get('contenido'), node.get('pregunta'), ''),
+            'options': first(nested.get('options'), node.get('opciones'), []),
+            'variable': first(nested.get('variable'), node.get('variable'), ''),
+            'input_type': first(nested.get('input_type'), node.get('input_type'), 'text'),
+            'operator': first(nested.get('operator'), node.get('operator'), 'eq'),
+            'value': first(nested.get('value'), node.get('value'), ''),
+            'action_type': first(nested.get('action_type'), node.get('action_type'), ''),
+            'payload': first(nested.get('payload'), node.get('payload'), {}),
+            'mediaType': first(nested.get('mediaType'), node.get('mediaType'), ''),
+            'mediaUrl': first(nested.get('mediaUrl'), node.get('mediaUrl'), ''),
+            'delayMs': first(nested.get('delayMs'), node.get('delayMs'), 0),
+            'tagValue': first(nested.get('tagValue'), node.get('tagValue'), ''),
+            'message': first(nested.get('message'), nested.get('text'), node.get('message'), ''),
+            'reason': first(nested.get('reason'), node.get('reason'), 'flow_handoff'),
+        }
+
+    # ── Tag helper ────────────────────────────────────────────────────────────
+
+    def _apply_tag(self, conversation, tag_value: str) -> None:
+        if not tag_value or not conversation:
+            return
+        try:
+            metadata = {**(getattr(conversation, 'metadata', None) or {})}
+            tags = list(metadata.get('tags') or [])
+            if tag_value not in tags:
+                tags.append(tag_value)
+            metadata['tags'] = tags
+            conversation.metadata = metadata
+            conversation.save(update_fields=['metadata', 'updated_at'])
+        except Exception:
+            pass
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

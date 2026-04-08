@@ -213,3 +213,44 @@ class Contact(models.Model):
     @property
     def full_name(self) -> str:
         return f'{self.nombre} {self.apellido}'.strip()
+
+
+# ─── Security Audit Log ─────────────────────────────────────────────────────────
+
+class SecurityAuditLog(models.Model):
+    EVENT_CHOICES = [
+        ('login_success', 'Login exitoso'),
+        ('login_failed', 'Login fallido'),
+        ('login_blocked_ip', 'Login bloqueado por IP'),
+        ('password_changed', 'Contrasena cambiada'),
+        ('security_settings_changed', 'Configuracion de seguridad cambiada'),
+        ('agent_created', 'Agente creado'),
+        ('agent_deleted', 'Agente eliminado'),
+        ('ip_allowlist_changed', 'Lista blanca IP cambiada'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name='audit_logs'
+    )
+    actor = models.ForeignKey(
+        'User', on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_logs'
+    )
+    actor_email = models.EmailField(blank=True)
+    event_type = models.CharField(max_length=50, choices=EVENT_CHOICES)
+    event_description = models.CharField(max_length=500)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=300, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'security_audit_logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['organization', '-created_at'], name='sec_audit_org_date_idx'),
+            models.Index(fields=['organization', 'event_type'], name='sec_audit_org_type_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.event_type} — {self.actor_email} — {self.created_at}'

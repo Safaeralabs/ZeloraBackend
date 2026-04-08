@@ -27,15 +27,16 @@ class RoutePlanner:
         policy: PolicyDecision,
     ) -> RouterDecision:
         route, target, agent, final_action, post_actions = self._plan_route(event, intent, risk, policy)
+        effective_intent = intent.custom_intent_name or intent.intent.value
         model_selection = self.model_selector.select_for_route(
             tenant_id=event.tenant_id,
-            intent_name=intent.intent.value,
+            intent_name=effective_intent,
             route_name=route.value,
         )
         return RouterDecision.from_components(
             tenant_id=event.tenant_id,
             conversation_id=event.conversation_id,
-            intent=intent.intent.value,
+            intent=effective_intent,
             confidence=intent.confidence,
             entities=intent.entities,
             sentiment=intent.sentiment.value,
@@ -58,6 +59,18 @@ class RoutePlanner:
         risk: RiskAssessment,
         policy: PolicyDecision,
     ) -> tuple[RouteType, str | None, str | None, str, list[PostAction]]:
+        capabilities = self._agent_capabilities(event)
+        active_ai_agent = self._active_ai_agent(event)
+        # ── Org custom intents: look up matching DB flow ──────────────────────
+        if intent.custom_intent_name:
+            return (
+                RouteType.TRIGGER_FLOW,
+                intent.custom_intent_name,
+                None,
+                'start_flow',
+                [],
+            )
+
         # ── Security: always block first ──────────────────────────────────────
         if policy.status == PolicyStatus.BLOCKED or intent.intent == IntentName.PROMPT_INJECTION_ATTEMPT:
             return (
@@ -107,6 +120,14 @@ class RoutePlanner:
                         payload={'task_type': 'stock_check', 'priority': 'high'},
                     )
                 ]
+            if not capabilities['sales_enabled'] and capabilities['general_enabled']:
+                return (
+                    RouteType.ROUTE_TO_GENERAL_AGENT,
+                    'general_support',
+                    'general_agent',
+                    'handoff_to_general_agent',
+                    [],
+                )
             return (
                 RouteType.ROUTE_TO_SALES_AGENT,
                 'sales_pipeline',
@@ -146,6 +167,22 @@ class RoutePlanner:
                     'handoff_to_operations_agent',
                     [],
                 )
+            if active_ai_agent == 'sales' and capabilities['sales_enabled']:
+                return (
+                    RouteType.ROUTE_TO_SALES_AGENT,
+                    'sales_pipeline',
+                    'sales_agent',
+                    'continue_with_sales_agent',
+                    [],
+                )
+            if capabilities['general_enabled']:
+                return (
+                    RouteType.ROUTE_TO_GENERAL_AGENT,
+                    'general_support',
+                    'general_agent',
+                    'handoff_to_general_agent',
+                    [],
+                )
             return (
                 RouteType.DIRECT_AI_REPLY,
                 None,
@@ -165,6 +202,30 @@ class RoutePlanner:
             )
 
         if intent.intent == IntentName.UNKNOWN and event.channel in (Channel.WEB, Channel.APP):
+            if active_ai_agent == 'sales' and capabilities['sales_enabled']:
+                return (
+                    RouteType.ROUTE_TO_SALES_AGENT,
+                    'sales_pipeline',
+                    'sales_agent',
+                    'continue_with_sales_agent',
+                    [],
+                )
+            if capabilities['general_enabled']:
+                return (
+                    RouteType.ROUTE_TO_GENERAL_AGENT,
+                    'general_support',
+                    'general_agent',
+                    'handoff_to_general_agent',
+                    [],
+                )
+            if capabilities['general_enabled'] and not capabilities['sales_enabled']:
+                return (
+                    RouteType.ROUTE_TO_GENERAL_AGENT,
+                    'general_support',
+                    'general_agent',
+                    'handoff_to_general_agent',
+                    [],
+                )
             return (
                 RouteType.ROUTE_TO_SALES_AGENT,
                 'sales_pipeline',
@@ -180,3 +241,18 @@ class RoutePlanner:
             'request_more_context',
             [],
         )
+
+    def _agent_capabilities(self, event: NormalizedEvent) -> dict[str, bool]:
+        metadata = getattr(event, 'metadata', None) or {}
+        raw = metadata.get('agent_capabilities') or {}
+        return {
+            'general_enabled': bool(raw.get('general_enabled', True)),
+            'sales_enabled': bool(raw.get('sales_enabled', True)),
+        }
+
+    def _active_ai_agent(self, event: NormalizedEvent) -> str | None:
+        metadata = getattr(event, 'metadata', None) or {}
+        active_agent = metadata.get('active_ai_agent')
+        if active_agent in {'general', 'sales', 'marketing', 'operations'}:
+            return active_agent
+        return None

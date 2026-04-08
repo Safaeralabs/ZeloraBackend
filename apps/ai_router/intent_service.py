@@ -164,6 +164,29 @@ class IntentService:
                 recommended_action='direct_ai_reply',
             )
 
+        # ── Org-specific custom intents ───────────────────────────────────────
+        tenant_id = getattr(event, 'tenant_id', None)
+        if tenant_id:
+            try:
+                from apps.flows.models import CustomIntent
+                custom_intents = list(
+                    CustomIntent.objects.filter(organization_id=tenant_id, is_active=True)
+                )
+                for ci in custom_intents:
+                    kws = [k.lower().strip() for k in (ci.keywords or []) if k.strip()]
+                    if kws and any(kw in text for kw in kws):
+                        return IntentClassification(
+                            intent=IntentName.UNKNOWN,
+                            confidence=0.92,
+                            entities={},
+                            sentiment=Sentiment.NEUTRAL,
+                            urgency=Urgency.NORMAL,
+                            recommended_action='start_flow',
+                            custom_intent_name=ci.name,
+                        )
+            except Exception:
+                pass
+
         return IntentClassification(
             intent=IntentName.UNKNOWN,
             confidence=0.42,

@@ -1,10 +1,15 @@
 import hashlib
 import re
+import structlog
 
 from apps.analytics.models import DocumentExtractionCandidate
 
+logger = structlog.get_logger(__name__)
 
+
+# Matches all-caps headings OR Title Case short lines (≤ 8 words, no sentence-ending punctuation)
 HEADING_RE = re.compile(r'^[A-Z0-9][A-Z0-9\s"()./%:-]{4,}$')
+TITLE_CASE_RE = re.compile(r'^[A-ZÁÉÍÓÚÑ][^\n.!?]{3,60}$')
 PRICE_RE = re.compile(r'(\$\s?\d[\d.,]*|\b\d+(?:[.,]\d+)?%\b|\bdesde\s+\$\s?\d[\d.,]*)', re.IGNORECASE)
 POLICY_HINT_RE = re.compile(
     r'\b(requiere|debe|aplica|incluye|no se permite|no se permiten|presentar|reserva|anticipo|recargo|subsidio)\b',
@@ -41,23 +46,29 @@ def _infer_service_candidates(lines: list[str]) -> list[dict]:
     candidates: list[dict] = []
     current_heading = ''
     for line in lines:
-        if HEADING_RE.match(line) and len(line) <= 90:
+        is_allcaps_heading = bool(HEADING_RE.match(line)) and len(line) <= 90
+        is_title_heading = (
+            bool(TITLE_CASE_RE.match(line))
+            and len(line.split()) <= 8
+            and not PRICE_RE.search(line)
+            and not POLICY_HINT_RE.search(line)
+        )
+        if is_allcaps_heading or is_title_heading:
             current_heading = line.title()
-            if len(current_heading.split()) <= 8:
-                candidates.append({
-                    'kind': 'service',
-                    'title': current_heading,
-                    'body': '',
-                    'confidence': 0.62,
-                    'metadata': {'source': 'heading'},
-                })
+            candidates.append({
+                'kind': 'service',
+                'title': current_heading,
+                'body': '',
+                'confidence': 0.65,
+                'metadata': {'source': 'heading'},
+            })
             continue
-        if current_heading and len(line) <= 80 and not PRICE_RE.search(line) and not POLICY_HINT_RE.search(line):
-            if len(line.split()) <= 8:
+        if current_heading and len(line) <= 120 and not PRICE_RE.search(line) and not POLICY_HINT_RE.search(line):
+            if len(line.split()) <= 12:
                 candidates.append({
                     'kind': 'service',
                     'title': line,
-                    'body': f'Detectado dentro de la seccion {current_heading}.',
+                    'body': f'Detectado dentro de la sección: {current_heading}.',
                     'confidence': 0.68,
                     'metadata': {'source': 'section_item', 'section': current_heading},
                 })
@@ -173,6 +184,213 @@ def generate_document_extraction_candidates(*, document) -> dict[str, int]:
     return {'created': created, 'updated': updated, 'processed_documents': 1}
 
 
+def generate_ai_analysis_candidates(*, document, settings=None) -> dict[str, int]:
+    """
+    Run AI-powered analysis on a KB document using OpenAI.
+    Produces candidates of kind 'ai_summary' and 'ai_qa'.
+    Silently skips if ENABLE_REAL_AI is False or no API key.
+    """
+    if settings is None:
+        from django.conf import settings as django_settings
+        settings = django_settings
+
+    text = (document.extracted_text or '').strip()
+    if not text:
+        return {'created': 0, 'updated': 0}
+
+    if not getattr(settings, 'ENABLE_REAL_AI', False) or not getattr(settings, 'OPENAI_API_KEY', ''):
+        return {'created': 0, 'updated': 0}
+
+    doc_id = str(document.id)
+    logger.info('ai_analysis_start', doc_id=doc_id, filename=document.filename, text_len=len(text))
+
+    try:
+        import json
+        import openai
+        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+
+        system_prompt = (
+            'Eres un asistente que analiza documentos de empresa para extraer conocimiento útil. '
+            'Responde SIEMPRE en JSON válido, sin texto adicional.'
+        )
+        user_prompt = (
+            'Analiza el siguiente documento de empresa y devuelve un JSON con esta estructura exacta:\n'
+            '{\n'
+            '  "summary": "Resumen claro en 2-3 oraciones de qué trata el documento",\n'
+            '  "purpose": "faq|policy|business",\n'
+            '  "services": [\n'
+            '    {"name": "Nombre del servicio o producto", "description": "Descripción breve de qué incluye, para qué sirve, precio si aparece"}\n'
+            '  ],\n'
+            '  "faqs": [\n'
+            '    {"question": "Pregunta frecuente sobre el servicio", "answer": "Respuesta concreta"}\n'
+            '  ],\n'
+            '  "policies": [\n'
+            '    {"title": "Nombre de la política o condición", "body": "Texto exacto de la política"}\n'
+            '  ],\n'
+            '  "flow_hints": [\n'
+            '    {"title": "Nombre del flujo sugerido", "body": "Por qué este documento sugiere este flujo"}\n'
+            '  ]\n'
+            '}\n\n'
+            'Reglas:\n'
+            '- services: lista TODOS los servicios, productos, paquetes o planes que aparezcan en el documento. Si el documento es un catálogo, lista cada ítem.\n'
+            '- faqs: 3 a 7 preguntas reales que un cliente haría sobre el contenido.\n'
+            '- policies: condiciones, restricciones, requisitos, formas de pago, devoluciones, etc.\n'
+            '- flow_hints: solo si el documento sugiere flujos conversacionales claros (e.g. "para cotizar X el cliente debe responder Y").\n'
+            '- Si una sección no aplica, devuelve lista vacía [].\n\n'
+            f'DOCUMENTO:\n{text[:7000]}'
+        )
+
+        completion = client.chat.completions.create(
+            model=getattr(settings, 'OPENAI_MODEL', 'gpt-4o-mini'),
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+            max_tokens=2500,
+            temperature=0.3,
+            response_format={'type': 'json_object'},
+        )
+
+        raw = completion.choices[0].message.content or '{}'
+        logger.info(
+            'ai_analysis_raw_response',
+            doc_id=doc_id,
+            raw_len=len(raw),
+            raw_preview=raw[:500],
+        )
+        data = json.loads(raw)
+        logger.info(
+            'ai_analysis_parsed',
+            doc_id=doc_id,
+            summary_len=len(data.get('summary') or ''),
+            services_count=len(data.get('services') or []),
+            faqs_count=len(data.get('faqs') or []),
+            policies_count=len(data.get('policies') or []),
+            flow_hints_count=len(data.get('flow_hints') or []),
+        )
+
+    except Exception as exc:
+        logger.error('ai_analysis_failed', doc_id=doc_id, error=str(exc), exc_info=True)
+        return {'created': 0, 'updated': 0}
+
+    created = 0
+    updated = 0
+
+    # ── ai_summary candidate ──────────────────────────────────────────────────
+    summary = (data.get('summary') or '').strip()
+    purpose = (data.get('purpose') or 'faq').strip()
+    if summary:
+        fingerprint = _make_fingerprint(str(document.id), 'ai_summary', summary[:80], '')
+        _, was_created = DocumentExtractionCandidate.objects.update_or_create(
+            organization=document.organization,
+            kind='ai_summary',
+            fingerprint=fingerprint,
+            defaults={
+                'source_document': document,
+                'title': f'Resumen: {document.filename}',
+                'body': summary,
+                'confidence': 0.90,
+                'metadata': {'purpose': purpose, 'source': 'openai'},
+            },
+        )
+        created += 1 if was_created else 0
+        updated += 0 if was_created else 1
+
+    # ── ai_qa candidates ──────────────────────────────────────────────────────
+    faqs = data.get('faqs') or []
+    for faq in faqs[:10]:
+        question = _clean_line(faq.get('question') or '')
+        answer = _clean_line(faq.get('answer') or '')
+        if not question or not answer:
+            continue
+        fingerprint = _make_fingerprint(str(document.id), 'ai_qa', question, answer[:100])
+        _, was_created = DocumentExtractionCandidate.objects.update_or_create(
+            organization=document.organization,
+            kind='ai_qa',
+            fingerprint=fingerprint,
+            defaults={
+                'source_document': document,
+                'title': question[:255],
+                'body': answer[:3000],
+                'confidence': 0.85,
+                'metadata': {'source': 'openai', 'purpose': purpose},
+            },
+        )
+        created += 1 if was_created else 0
+        updated += 0 if was_created else 1
+
+    # ── service candidates (AI-extracted) ────────────────────────────────────
+    services = data.get('services') or []
+    for svc in services[:30]:
+        name = _clean_line(svc.get('name') or '')
+        description = _clean_line(svc.get('description') or '')
+        if not name:
+            continue
+        fingerprint = _make_fingerprint(str(document.id), 'service', name, description[:80])
+        _, was_created = DocumentExtractionCandidate.objects.update_or_create(
+            organization=document.organization,
+            kind='service',
+            fingerprint=fingerprint,
+            defaults={
+                'source_document': document,
+                'title': name[:255],
+                'body': description[:3000],
+                'confidence': 0.88,
+                'metadata': {'source': 'openai'},
+            },
+        )
+        created += 1 if was_created else 0
+        updated += 0 if was_created else 1
+
+    # ── policy candidates (AI-extracted) ──────────────────────────────────────
+    policies = data.get('policies') or []
+    for pol in policies[:15]:
+        title = _clean_line(pol.get('title') or '')
+        body = _clean_line(pol.get('body') or '')
+        if not title:
+            continue
+        fingerprint = _make_fingerprint(str(document.id), 'policy', title, body[:80])
+        _, was_created = DocumentExtractionCandidate.objects.update_or_create(
+            organization=document.organization,
+            kind='policy',
+            fingerprint=fingerprint,
+            defaults={
+                'source_document': document,
+                'title': title[:255],
+                'body': body[:3000],
+                'confidence': 0.87,
+                'metadata': {'source': 'openai'},
+            },
+        )
+        created += 1 if was_created else 0
+        updated += 0 if was_created else 1
+
+    # ── flow_hint candidates (AI-extracted) ───────────────────────────────────
+    flow_hints = data.get('flow_hints') or []
+    for hint in flow_hints[:10]:
+        title = _clean_line(hint.get('title') or '')
+        body = _clean_line(hint.get('body') or '')
+        if not title:
+            continue
+        fingerprint = _make_fingerprint(str(document.id), 'flow_hint', title, body[:80])
+        _, was_created = DocumentExtractionCandidate.objects.update_or_create(
+            organization=document.organization,
+            kind='flow_hint',
+            fingerprint=fingerprint,
+            defaults={
+                'source_document': document,
+                'title': title[:255],
+                'body': body[:3000],
+                'confidence': 0.80,
+                'metadata': {'source': 'openai'},
+            },
+        )
+        created += 1 if was_created else 0
+        updated += 0 if was_created else 1
+
+    return {'created': created, 'updated': updated}
+
+
 def approve_document_extraction_candidate(*, candidate, author=None):
     from apps.ecommerce.models import Product
     from apps.knowledge_base.models import KBArticle
@@ -206,12 +424,36 @@ def approve_document_extraction_candidate(*, candidate, author=None):
         'pricing_rule': 'pricing_rule',
         'policy': 'policy',
         'flow_hint': 'flow_hint',
+        'ai_summary': 'ai_summary',
+        'ai_qa': 'ai_qa',
     }.get(candidate.kind, 'document_extraction')
     category = {
         'pricing_rule': 'Reglas de precio',
         'policy': 'Politicas y condiciones',
         'flow_hint': 'Flow hints',
+        'ai_summary': 'Resumen IA',
+        'ai_qa': 'FAQ extraído por IA',
     }.get(candidate.kind, 'Documento estructurado')
+    _PURPOSE_ALIAS = {
+        'product_context': 'business', 'product': 'business', 'why_us': 'business',
+        'pricing': 'policy',
+        'objection': 'sales_scripts', 'closing': 'sales_scripts',
+    }
+    # Map extraction kind → KB purpose
+    _KIND_PURPOSE = {
+        'policy':        'policy',
+        'pricing_rule':  'policy',
+        'service':       'business',
+        'flow_hint':     'faq',
+        'ai_summary':    None,   # uses metadata purpose
+        'ai_qa':         None,   # uses metadata purpose
+    }
+    if candidate.kind in _KIND_PURPOSE and _KIND_PURPOSE[candidate.kind] is not None:
+        purpose = _KIND_PURPOSE[candidate.kind]
+    else:
+        raw_purpose = (candidate.metadata or {}).get('purpose', 'faq')
+        purpose = _PURPOSE_ALIAS.get(raw_purpose, raw_purpose)
+
     content = candidate.body
     if candidate.kind == 'flow_hint' and candidate.metadata.get('suggested_questions'):
         questions = '\n'.join(f'- {question}' for question in candidate.metadata['suggested_questions'])
@@ -223,6 +465,7 @@ def approve_document_extraction_candidate(*, candidate, author=None):
         title=candidate.title,
         content=content,
         category=category,
+        purpose=purpose,
         tags=[tag, 'document_extraction'],
         status='draft',
     )

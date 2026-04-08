@@ -5,6 +5,7 @@ from apps.workspace.serializers import CollabNoteSerializer
 
 DEFAULT_OPERATOR_STATE = {
     'owner': 'ia',
+    'active_ai_agent': '',
     'commercial_status': 'nuevo',
     'priority': 'media',
     'follow_up': False,
@@ -107,6 +108,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     last_message_at = serializers.SerializerMethodField()
     owner = serializers.SerializerMethodField()
+    active_ai_agent = serializers.SerializerMethodField()
     commercial_status = serializers.SerializerMethodField()
     priority = serializers.SerializerMethodField()
     follow_up = serializers.SerializerMethodField()
@@ -128,7 +130,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
             'contact_nombre', 'contact_apellido', 'contact_cedula',
             'contact_telefono', 'contact_email', 'contact_tipo_afiliado',
             'agent_nombre', 'last_message', 'last_message_at',
-            'owner', 'commercial_status', 'priority', 'follow_up',
+            'owner', 'active_ai_agent', 'commercial_status', 'priority', 'follow_up',
             'opportunity', 'next_step', 'conversation_summary',
             'escalation_reason', 'note_count', 'unread', 'active_flow', 'qualification',
             'sales_stage', 'close_signals',
@@ -154,6 +156,9 @@ class ConversationListSerializer(serializers.ModelSerializer):
 
     def get_owner(self, obj):
         return self._operator_state(obj)['owner']
+
+    def get_active_ai_agent(self, obj):
+        return self._operator_state(obj)['active_ai_agent']
 
     def get_commercial_status(self, obj):
         return self._operator_state(obj)['commercial_status']
@@ -220,6 +225,7 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
     contact_tipo_afiliado = serializers.CharField(source='contact.tipo_afiliado', read_only=True)
     agent_nombre = serializers.SerializerMethodField()
     owner = serializers.SerializerMethodField()
+    active_ai_agent = serializers.SerializerMethodField()
     commercial_status = serializers.SerializerMethodField()
     priority = serializers.SerializerMethodField()
     follow_up = serializers.SerializerMethodField()
@@ -242,7 +248,7 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
             'contact_nombre', 'contact_apellido', 'contact_cedula',
             'contact_telefono', 'contact_email', 'contact_tipo_afiliado',
-            'agent_nombre', 'owner', 'commercial_status', 'priority',
+            'agent_nombre', 'owner', 'active_ai_agent', 'commercial_status', 'priority',
             'follow_up', 'opportunity', 'next_step', 'conversation_summary',
             'escalation_reason', 'unread', 'active_flow', 'qualification', 'sales_stage', 'close_signals', 'messages', 'timeline', 'notes',
         ]
@@ -258,6 +264,9 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
 
     def get_owner(self, obj):
         return self._operator_state(obj)['owner']
+
+    def get_active_ai_agent(self, obj):
+        return self._operator_state(obj)['active_ai_agent']
 
     def get_commercial_status(self, obj):
         return self._operator_state(obj)['commercial_status']

@@ -1,12 +1,16 @@
 import hashlib
 import hmac
+import os
 import re
+import uuid
 import httpx
 from django.conf import settings
+from django.core.files.storage import default_storage
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from .models import ChannelConfig
@@ -44,12 +48,54 @@ from .services.whatsapp_embedded_signup import (
     mark_embedded_signup_failure,
     start_embedded_signup,
 )
-from .public_session import build_public_appchat_session_token, validate_public_appchat_session_token
+from .public_session import (
+    build_public_appchat_session_token,
+    validate_public_appchat_session_token,
+    build_public_webchat_session_token,
+    validate_public_webchat_session_token,
+)
+from .upload_security import validate_channel_image_upload
 from core.permissions import IsOrganizationMember
 from core.mixins import OrgScopedMixin
 
 
 PUBLIC_SLUG_SUFFIX_RE = re.compile(r'-(?P<suffix>[a-f0-9]{8})$')
+
+
+def _add_widget_cors_headers(response):
+    """Add permissive CORS headers for public widget endpoints called from customer domains."""
+    response['Access-Control-Allow-Origin'] = '*'
+    response['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response['Access-Control-Allow-Headers'] = 'Content-Type, Accept'
+    response['Access-Control-Max-Age'] = '86400'
+    return response
+
+
+def _check_origin_allowed(config: ChannelConfig, request) -> bool:
+    """Return True if the request Origin is in the widget's allowed_domains list."""
+    origin = request.headers.get('Origin', '')
+    if not origin:
+        return True  # Direct / server-to-server calls always allowed
+    allowed = (config.settings or {}).get('allowed_domains', [])
+    if not allowed:
+        return True  # No restriction when list is empty
+    from urllib.parse import urlparse
+    origin_host = (urlparse(origin).hostname or '').lower()
+    for domain in allowed:
+        d = domain.lower().strip()
+        if d and (d == origin_host or origin_host.endswith('.' + d)):
+            return True
+    return False
+
+
+def sanitize_media_url(value):
+    if not value:
+        return ''
+    normalized = str(value).strip()
+    lowered = normalized.lower()
+    if lowered.startswith('data:') or lowered.startswith('javascript:'):
+        return ''
+    return normalized
 
 
 def resolve_public_app_chat_config(org_slug: str | None):
@@ -151,11 +197,27 @@ def build_whatsapp_connection_payload(config: ChannelConfig) -> dict:
     }
 
 
+def _get_agent_greeting(config: ChannelConfig) -> str:
+    """Return the canonical greeting from the agent configuration."""
+    try:
+        onboarding = ChannelConfig.objects.filter(
+            organization=config.organization, channel='onboarding'
+        ).first()
+        if onboarding:
+            onboarding_settings = onboarding.settings or {}
+            sales_greeting = onboarding_settings.get('sales_agent_profile', {}).get('greeting_message', '')
+            general_greeting = onboarding_settings.get('general_agent_profile', {}).get('greeting_message', '')
+            return sales_greeting or general_greeting or ''
+    except Exception:
+        pass
+    return ''
+
+
 def build_web_widget_payload(config: ChannelConfig, request) -> dict:
     config_settings = config.settings or {}
     widget_script_url = request.build_absolute_uri('/static/widget.js')
     org_slug = getattr(request.user.organization, 'slug', 'org')
-    public_demo_url = request.build_absolute_uri(f'/webapp/demo?org={org_slug}')
+    public_demo_url = request.build_absolute_uri(f'/web-widget/demo?org={org_slug}')
     embed_snippet = (
         f'<script src="{widget_script_url}" '
         f'data-vendly-org="{org_slug}" '
@@ -167,7 +229,7 @@ def build_web_widget_payload(config: ChannelConfig, request) -> dict:
         'organization_slug': org_slug,
         'is_active': config.is_active,
         'widget_name': config_settings.get('widget_name', 'Asistente web'),
-        'greeting_message': config_settings.get('greeting_message', 'Hola. En que podemos ayudarte hoy?'),
+        'greeting_message': _get_agent_greeting(config),
         'brand_color': config_settings.get('brand_color', '#0f766e'),
         'position': config_settings.get('position', 'bottom-right'),
         'allowed_domains': config_settings.get('allowed_domains', []),
@@ -227,7 +289,7 @@ def build_app_chat_payload(config: ChannelConfig, request) -> dict:
         'organization_slug': org_slug,
         'is_active': config.is_active,
         'app_name': config_settings.get('app_name', 'App Chat'),
-        'welcome_message': config_settings.get('welcome_message', 'Hola. En que podemos ayudarte desde la app?'),
+        'welcome_message': _get_agent_greeting(config),
         'primary_color': config_settings.get('primary_color', '#1d4ed8'),
         'accent_color': config_settings.get('accent_color', '#0f172a'),
         'page_background_color': config_settings.get('page_background_color', '#f7f3eb'),
@@ -242,7 +304,7 @@ def build_app_chat_payload(config: ChannelConfig, request) -> dict:
         'social_visibility': config_settings.get('social_visibility', 'auto'),
         'component_style': config_settings.get('component_style', 'soft_cards'),
         'layout_template': config_settings.get('layout_template', 'stack'),
-        'background_image_url': config_settings.get('background_image_url', ''),
+        'background_image_url': sanitize_media_url(config_settings.get('background_image_url', '')),
         'background_overlay': config_settings.get('background_overlay', 'soft-dark'),
         'font_family': config_settings.get('font_family', 'Manrope'),
         'font_scale': config_settings.get('font_scale', 'md'),
@@ -251,7 +313,7 @@ def build_app_chat_payload(config: ChannelConfig, request) -> dict:
         'bubble_style': config_settings.get('bubble_style', 'rounded'),
         'user_bubble_color': config_settings.get('user_bubble_color', '#1d4ed8'),
         'agent_bubble_color': config_settings.get('agent_bubble_color', '#ffffff'),
-        'header_logo_url': config_settings.get('header_logo_url', ''),
+        'header_logo_url': sanitize_media_url(config_settings.get('header_logo_url', '')),
         'launcher_label': config_settings.get('launcher_label', 'Abrir soporte'),
         'ticker_enabled': config_settings.get('ticker_enabled', False),
         'ticker_text': config_settings.get('ticker_text', ''),
@@ -349,6 +411,30 @@ def _broadcast_public_appchat_message(conversation, message):
         pass
 
 
+def _broadcast_public_webchat_message(conversation, message):
+    if conversation.canal != 'web' or not conversation.external_id:
+        return
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        from apps.conversations.consumers import build_public_webchat_group
+        from apps.conversations.serializers import MessageSerializer
+
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            build_public_webchat_group(conversation.organization.slug, conversation.external_id),
+            {
+                'type': 'webchat.message',
+                'conversation_id': str(conversation.id),
+                'session_id': conversation.external_id,
+                'message': MessageSerializer(message).data,
+            },
+        )
+    except Exception:
+        pass
+
+
 def _mark_inbound_unread(conversation, message_timestamp):
     metadata = {**(conversation.metadata or {})}
     inbox_state = {**(metadata.get('inbox_state') or {})}
@@ -372,6 +458,9 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
         raise ValueError('Organization not found')
     if channel == 'app' and not validate_public_appchat_session_token(org_slug, data['session_id'], session_token):
         raise ValueError('Invalid public app session token')
+    # For web channel, validate token only when one is provided (soft enforcement during setup)
+    if channel == 'web' and session_token and not validate_public_webchat_session_token(org_slug, data['session_id'], session_token):
+        raise ValueError('Invalid web chat session token')
 
     contact_lookup = {}
     if data.get('email'):
@@ -516,6 +605,7 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
 
     _broadcast_public_appchat_message(conversation, user_message)
     _broadcast_public_appchat_message(conversation, bot_message)
+    _broadcast_public_webchat_message(conversation, bot_message)
     return {
         'conversation_id': str(conversation.id),
         'contact_id': str(contact.id),
@@ -619,7 +709,6 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
                 'is_active': False,
                 'settings': {
                     'widget_name': 'Asistente web',
-                    'greeting_message': 'Hola. En que podemos ayudarte hoy?',
                     'brand_color': '#0f766e',
                     'position': 'bottom-right',
                     'allowed_domains': [],
@@ -641,7 +730,6 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
                 'is_active': False,
                 'settings': {
                     'app_name': 'App Chat',
-                    'welcome_message': 'Hola. En que podemos ayudarte desde la app?',
                     'primary_color': '#1d4ed8',
                     'accent_color': '#0f172a',
                     'page_background_color': '#f7f3eb',
@@ -862,7 +950,6 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         config_settings = {**(config.settings or {})}
         for key in [
             'widget_name',
-            'greeting_message',
             'brand_color',
             'position',
             'allowed_domains',
@@ -890,12 +977,15 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         authentication_classes=[],
     )
     def webapp_public(self, request, org_slug=None):
+        if request.method == 'OPTIONS':
+            return _add_widget_cors_headers(Response(status=status.HTTP_200_OK))
         config = resolve_public_web_widget_config(org_slug)
         if config is None:
-            return Response({'detail': 'Web Widget no disponible para esta marca.'}, status=status.HTTP_404_NOT_FOUND)
-
+            return _add_widget_cors_headers(
+                Response({'detail': 'Web Widget no disponible para esta marca.'}, status=status.HTTP_404_NOT_FOUND)
+            )
         serializer = WebWidgetPublicSerializer(build_public_web_widget_payload(config, request))
-        return Response(serializer.data)
+        return _add_widget_cors_headers(Response(serializer.data))
 
     @action(detail=False, methods=['get', 'patch'], url_path='appchat/connection')
     def appchat_connection(self, request):
@@ -912,7 +1002,6 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         config_settings = {**(config.settings or {})}
         for key in [
             'app_name',
-            'welcome_message',
             'primary_color',
             'accent_color',
             'page_background_color',
@@ -965,6 +1054,34 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
 
         response_serializer = AppChatConnectionSerializer(build_app_chat_payload(config, request))
         return Response(response_serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='appchat/upload-media', parser_classes=[MultiPartParser, FormParser])
+    def appchat_upload_media(self, request):
+        media_kind = (request.data.get('kind') or '').strip().lower()
+        if media_kind not in {'logo', 'hero'}:
+            return Response({'detail': 'Tipo de medio no soportado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        uploaded_file = request.FILES.get('file')
+        validate_channel_image_upload(uploaded_file)
+
+        extension = os.path.splitext(uploaded_file.name)[1].lower() or '.jpg'
+        organization_id = str(request.user.organization_id)
+        filename = f'{uuid.uuid4().hex}{extension}'
+        storage_path = f'appchat/{organization_id}/{media_kind}/{filename}'
+        stored_path = default_storage.save(storage_path, uploaded_file)
+        public_url = request.build_absolute_uri(default_storage.url(stored_path))
+
+        return Response(
+            {
+                'url': public_url,
+                'path': stored_path,
+                'name': os.path.basename(stored_path),
+                'size': uploaded_file.size,
+                'content_type': uploaded_file.content_type,
+                'kind': media_kind,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(
         detail=False,
@@ -1026,6 +1143,47 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
         return Response(payload)
+
+    @action(
+        detail=False,
+        methods=['post', 'options'],
+        url_path='webchat/session',
+        permission_classes=[AllowAny],
+        authentication_classes=[],
+    )
+    def webchat_session(self, request):
+        if request.method == 'OPTIONS':
+            return _add_widget_cors_headers(Response(status=status.HTTP_200_OK))
+
+        org_slug = (request.data.get('organization_slug') or '').strip()
+        session_id = (request.data.get('session_id') or '').strip()
+
+        if not org_slug or not session_id:
+            return _add_widget_cors_headers(
+                Response({'error': 'organization_slug and session_id are required'}, status=status.HTTP_400_BAD_REQUEST)
+            )
+        if len(session_id) > 120:
+            return _add_widget_cors_headers(
+                Response({'error': 'session_id too long'}, status=status.HTTP_400_BAD_REQUEST)
+            )
+
+        config = resolve_public_web_widget_config(org_slug)
+        if config is None:
+            return _add_widget_cors_headers(
+                Response({'detail': 'Web Widget no disponible para esta marca.'}, status=status.HTTP_404_NOT_FOUND)
+            )
+
+        if not _check_origin_allowed(config, request):
+            return _add_widget_cors_headers(
+                Response({'error': 'Origin not allowed'}, status=status.HTTP_403_FORBIDDEN)
+            )
+
+        token = build_public_webchat_session_token(config.organization.slug, session_id)
+        return _add_widget_cors_headers(Response({
+            'session_token': token,
+            'organization_slug': config.organization.slug,
+            'session_id': session_id,
+        }))
 
     @action(detail=False, methods=['get', 'patch'], url_path='database/connection')
     def database_connection(self, request):
@@ -1164,12 +1322,24 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
 
     @action(
         detail=False,
-        methods=['post'],
+        methods=['post', 'options'],
         url_path='webchat/messages',
         permission_classes=[AllowAny],
         authentication_classes=[],
     )
     def webchat_messages(self, request):
+        if request.method == 'OPTIONS':
+            return _add_widget_cors_headers(Response(status=status.HTTP_200_OK))
+
+        # Origin check against allowed_domains (only when domain list is configured)
+        org_slug = (request.data.get('organization_slug') or '').strip()
+        if org_slug:
+            web_config = resolve_public_web_widget_config(org_slug)
+            if web_config and not _check_origin_allowed(web_config, request):
+                return _add_widget_cors_headers(
+                    Response({'error': 'Origin not allowed'}, status=status.HTTP_403_FORBIDDEN)
+                )
+
         serializer = WebChatInboundSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -1179,8 +1349,10 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
                 source='web_widget',
             )
         except ValueError as exc:
-            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(payload, status=status.HTTP_201_CREATED)
+            return _add_widget_cors_headers(
+                Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            )
+        return _add_widget_cors_headers(Response(payload, status=status.HTTP_201_CREATED))
 
     @action(
         detail=False,

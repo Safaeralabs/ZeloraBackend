@@ -24,11 +24,13 @@ from .views import (
     OrganizationView,
     OnboardingProfileView,
     OnboardingQuickKnowledgeUploadView,
+    SecurityAuditLogViewSet,
 )
 
 router = DefaultRouter()
 router.register('agents', AgentViewSet, basename='agents')
 router.register('contacts', ContactViewSet, basename='contacts')
+router.register('audit-log', SecurityAuditLogViewSet, basename='audit-log')
 
 urlpatterns = [
     # Auth endpoints

@@ -77,6 +77,8 @@ class DocumentExtractionCandidate(models.Model):
         ('pricing_rule', 'Pricing rule'),
         ('policy', 'Policy'),
         ('flow_hint', 'Flow hint'),
+        ('ai_summary', 'AI Summary'),
+        ('ai_qa', 'AI Q&A'),
     ]
     STATUS_CHOICES = [
         ('pending', 'Pending'),

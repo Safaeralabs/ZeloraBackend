@@ -14,7 +14,10 @@ import structlog
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from apps.channels_config.public_session import validate_public_appchat_session_token
+from apps.channels_config.public_session import (
+    validate_public_appchat_session_token,
+    validate_public_webchat_session_token,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -255,6 +258,85 @@ class PublicAppChatConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({'type': 'pong'}))
 
     async def appchat_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'new_message',
+            'conversation_id': event.get('conversation_id'),
+            'session_id': event.get('session_id'),
+            'message': event.get('message', {}),
+        }))
+
+
+def build_public_webchat_group(org_slug: str, session_id: str) -> str:
+    normalized_org = ''.join(char if char.isalnum() else '-' for char in (org_slug or '').lower())
+    normalized_session = ''.join(char if char.isalnum() else '-' for char in (session_id or '').lower())
+    return f'webchat-{normalized_org}-{normalized_session}'[:100]
+
+
+@database_sync_to_async
+def _resolve_public_webchat_scope(org_slug: str):
+    from apps.channels_config.models import ChannelConfig
+
+    config = ChannelConfig.objects.select_related('organization').filter(
+        organization__slug=org_slug,
+        organization__is_active=True,
+        channel='web',
+        is_active=True,
+    ).first()
+    if config is None:
+        return None
+    return {
+        'organization_id': str(config.organization_id),
+        'organization_slug': config.organization.slug,
+    }
+
+
+class PublicWebChatConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        route_kwargs = self.scope.get('url_route', {}).get('kwargs', {})
+        query_string = self.scope.get('query_string', b'').decode()
+        params = parse_qs(query_string)
+        requested_org_slug = route_kwargs.get('org_slug', '')
+        session_id = route_kwargs.get('session_id', '')
+        session_token = (params.get('session_token', ['']) or [''])[0]
+
+        if not requested_org_slug or not session_id:
+            await self.close(code=4004)
+            return
+        if not validate_public_webchat_session_token(requested_org_slug, session_id, session_token):
+            await self.close(code=4003)
+            return
+
+        resolved_scope = await _resolve_public_webchat_scope(requested_org_slug)
+        if resolved_scope is None:
+            await self.close(code=4004)
+            return
+
+        self.organization_id = resolved_scope['organization_id']
+        self.organization_slug = resolved_scope['organization_slug']
+        self.session_id = session_id
+        self.public_group = build_public_webchat_group(self.organization_slug, self.session_id)
+
+        await self.channel_layer.group_add(self.public_group, self.channel_name)
+        await self.accept()
+        await self.send(text_data=json.dumps({
+            'type': 'connected',
+            'session_id': self.session_id,
+            'organization_slug': self.organization_slug,
+        }))
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'public_group'):
+            await self.channel_layer.group_discard(self.public_group, self.channel_name)
+
+    async def receive(self, text_data):
+        try:
+            data = json.loads(text_data)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if data.get('type') == 'ping':
+            await self.send(text_data=json.dumps({'type': 'pong'}))
+
+    async def webchat_message(self, event):
         await self.send(text_data=json.dumps({
             'type': 'new_message',
             'conversation_id': event.get('conversation_id'),

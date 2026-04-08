@@ -1,9 +1,15 @@
+import os
+import uuid
+
+from django.core.files.storage import default_storage
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from .models import Product, Order, InventoryMovement
-from .serializers import ProductSerializer, OrderSerializer, InventoryMovementSerializer
+from .serializers import ProductSerializer, PublicProductSerializer, OrderSerializer, InventoryMovementSerializer
+from .upload_security import validate_product_image_upload
 from core.permissions import IsOrganizationMember
 from core.mixins import OrgScopedMixin
 
@@ -21,6 +27,29 @@ class ProductViewSet(OrgScopedMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(organization=self.request.user.organization)
+
+    @action(detail=False, methods=['post'], url_path='upload-image', parser_classes=[MultiPartParser, FormParser])
+    def upload_image(self, request):
+        uploaded_file = request.FILES.get('file')
+        validate_product_image_upload(uploaded_file)
+
+        extension = os.path.splitext(uploaded_file.name)[1].lower() or '.jpg'
+        organization_id = str(request.user.organization_id)
+        filename = f'{uuid.uuid4().hex}{extension}'
+        storage_path = f'products/{organization_id}/{filename}'
+        stored_path = default_storage.save(storage_path, uploaded_file)
+        public_url = request.build_absolute_uri(default_storage.url(stored_path))
+
+        return Response(
+            {
+                'url': public_url,
+                'path': stored_path,
+                'name': os.path.basename(stored_path),
+                'size': uploaded_file.size,
+                'content_type': uploaded_file.content_type,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(
         detail=False,
@@ -42,7 +71,7 @@ class ProductViewSet(OrgScopedMixin, viewsets.ModelViewSet):
             status='active',
         ).prefetch_related('variants').order_by('-updated_at', '-created_at')[:12]
 
-        return Response(ProductSerializer(products, many=True).data)
+        return Response(PublicProductSerializer(products, many=True).data)
 
     @action(
         detail=False,
@@ -67,7 +96,7 @@ class ProductViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         if product is None:
             return Response({'detail': 'Producto no disponible.'}, status=status.HTTP_404_NOT_FOUND)
 
-        return Response(ProductSerializer(product).data)
+        return Response(PublicProductSerializer(product).data)
 
 
 class OrderViewSet(OrgScopedMixin, viewsets.ModelViewSet):

@@ -320,10 +320,7 @@ def process_kb_document(self, doc_id: str) -> dict:
                 }
                 doc.processing_status = 'ready'
                 doc.save(update_fields=['embedding', 'extracted_text', 'processing_status', 'processed', 'updated_at'])
-                try:
-                    generate_document_extraction_candidates(document=doc)
-                except Exception as extraction_error:
-                    logger.warning('kb_doc_structured_extraction_error', doc_id=doc_id, error=str(extraction_error))
+                _run_dual_extraction(doc=doc, doc_id=doc_id, settings=settings)
 
                 logger.info('kb_doc_embedded_openai', doc_id=doc_id, dim=len(embedding))
                 return {'status': 'ok', 'doc_id': doc_id, 'embedding_dim': len(embedding)}
@@ -348,10 +345,7 @@ def process_kb_document(self, doc_id: str) -> dict:
         }
         doc.processing_status = 'ready'
         doc.save(update_fields=['embedding', 'extracted_text', 'processing_status', 'processed', 'updated_at'])
-        try:
-            generate_document_extraction_candidates(document=doc)
-        except Exception as extraction_error:
-            logger.warning('kb_doc_structured_extraction_error', doc_id=doc_id, error=str(extraction_error))
+        _run_dual_extraction(doc=doc, doc_id=doc_id, settings=settings)
 
         logger.info('kb_doc_processed_heuristic', doc_id=doc_id, title=doc.filename)
         return {'status': 'ok', 'doc_id': doc_id, 'method': 'heuristic'}
@@ -367,6 +361,50 @@ def process_kb_document(self, doc_id: str) -> dict:
             pass
         logger.error('kb_process_error', doc_id=doc_id, error=str(exc), exc_info=True)
         raise self.retry(exc=exc)
+
+
+def _run_dual_extraction(*, doc, doc_id: str, settings) -> None:
+    """
+    Run structural (non-AI) + AI semantic analysis in parallel threads.
+    Both analyses produce DocumentExtractionCandidate records.
+    Errors in either thread are logged but never raised.
+    """
+    import threading
+    from apps.analytics.document_extraction import (
+        generate_document_extraction_candidates,
+        generate_ai_analysis_candidates,
+    )
+
+    structural_result: dict = {}
+    ai_result: dict = {}
+
+    def run_structural():
+        nonlocal structural_result
+        try:
+            structural_result = generate_document_extraction_candidates(document=doc)
+        except Exception as exc:
+            logger.warning('kb_doc_structural_extraction_error', doc_id=doc_id, error=str(exc))
+
+    def run_ai():
+        nonlocal ai_result
+        try:
+            ai_result = generate_ai_analysis_candidates(document=doc, settings=settings)
+        except Exception as exc:
+            logger.warning('kb_doc_ai_extraction_error', doc_id=doc_id, error=str(exc))
+
+    t1 = threading.Thread(target=run_structural, daemon=True)
+    t2 = threading.Thread(target=run_ai, daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=60)  # AI analysis can take longer
+
+    logger.info(
+        'kb_doc_dual_extraction_done',
+        doc_id=doc_id,
+        structural=structural_result,
+        ai=ai_result,
+    )
 
 
 def _extract_kb_document_text(doc) -> str:

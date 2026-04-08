@@ -29,6 +29,8 @@ class ProductVariantSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError('Stock values cannot be negative.')
         if capacity < 0:
             raise serializers.ValidationError({'capacity': 'Capacity cannot be negative.'})
+        if reserved > stock and offer_type in ('physical', 'hybrid'):
+            raise serializers.ValidationError({'reserved': 'Reserved units cannot exceed stock.'})
         return attrs
 
     class Meta:
@@ -75,6 +77,31 @@ class ProductSerializer(serializers.ModelSerializer):
 
         if capacity < 0:
             raise serializers.ValidationError({'capacity': 'Capacity cannot be negative.'})
+
+        images = attrs.get('images', getattr(self.instance, 'images', [])) or []
+        if len(images) > 5:
+            raise serializers.ValidationError({'images': 'A product can only have up to 5 images.'})
+        for image in images:
+            if not isinstance(image, str) or not image.strip():
+                raise serializers.ValidationError({'images': 'Each product image must be a valid URL string.'})
+            normalized_image = image.strip().lower()
+            if normalized_image.startswith('data:') or normalized_image.startswith('javascript:'):
+                raise serializers.ValidationError({'images': 'Inline or unsafe image sources are not allowed.'})
+
+        variants = self.initial_data.get('variants') if hasattr(self, 'initial_data') else None
+        if self.instance is None and not variants:
+            raise serializers.ValidationError({'variants': 'At least one variant is required.'})
+        if variants is not None:
+            if not isinstance(variants, list) or len(variants) == 0:
+                raise serializers.ValidationError({'variants': 'At least one variant is required.'})
+            seen_skus: set[str] = set()
+            for variant in variants:
+                sku = str((variant or {}).get('sku', '')).strip().lower()
+                if not sku:
+                    continue
+                if sku in seen_skus:
+                    raise serializers.ValidationError({'variants': 'Variant SKUs must be unique within a product.'})
+                seen_skus.add(sku)
         return attrs
 
     class Meta:
@@ -116,6 +143,49 @@ class ProductSerializer(serializers.ModelSerializer):
         for variant_id, variant in existing_by_id.items():
             if variant_id not in keep_ids:
                 variant.delete()
+
+
+class PublicProductVariantSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductVariant
+        fields = [
+            'id',
+            'sku',
+            'name',
+            'price',
+            'duration_minutes',
+            'capacity',
+            'delivery_mode',
+        ]
+
+
+class PublicProductSerializer(serializers.ModelSerializer):
+    variants = PublicProductVariantSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Product
+        fields = [
+            'id',
+            'title',
+            'brand',
+            'description',
+            'category',
+            'offer_type',
+            'price_type',
+            'service_mode',
+            'requires_booking',
+            'requires_shipping',
+            'service_duration_minutes',
+            'capacity',
+            'fulfillment_notes',
+            'attributes',
+            'images',
+            'tags',
+            'status',
+            'variants',
+            'created_at',
+            'updated_at',
+        ]
 
 
 class InventoryMovementSerializer(serializers.ModelSerializer):

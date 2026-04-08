@@ -14,14 +14,73 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+def _message_role_label(role: str) -> str:
+    if role == 'user':
+        return 'Cliente'
+    if role == 'bot':
+        return 'IA'
+    if role == 'agent':
+        return 'Operador humano'
+    return 'Sistema'
+
+
 def _build_conversation_summary(messages: list[dict]) -> str:
     lines = []
     for msg in messages[-20:]:
-        role = 'Cliente' if msg.get('role') == 'user' else 'Agente'
+        role = _message_role_label(str(msg.get('role', '')))
         content = str(msg.get('content', '')).strip()[:300]
         if content:
             lines.append(f'{role}: {content}')
     return '\n'.join(lines) or 'Sin mensajes.'
+
+
+def _learning_source_metadata(messages: list[dict]) -> dict:
+    counts = {
+        'user': sum(1 for msg in messages if msg.get('role') == 'user' and str(msg.get('content', '')).strip()),
+        'bot': sum(1 for msg in messages if msg.get('role') == 'bot' and str(msg.get('content', '')).strip()),
+        'agent': sum(1 for msg in messages if msg.get('role') == 'agent' and str(msg.get('content', '')).strip()),
+    }
+    if counts['agent'] > 0:
+        primary = 'agent'
+    elif counts['bot'] > 0:
+        primary = 'bot'
+    elif counts['user'] > 0:
+        primary = 'user'
+    else:
+        primary = 'system'
+    return {
+        'source_role': primary,
+        'source_label': _message_role_label(primary),
+        'source_roles_present': [role for role, count in counts.items() if count > 0],
+        'source_counts': counts,
+    }
+
+
+def _conversation_learning_metadata(conversation, messages: list[dict]) -> dict:
+    metadata = getattr(conversation, 'metadata', {}) or {}
+    operator_state = metadata.get('operator_state') or {}
+    owner = operator_state.get('owner') or 'ia'
+    has_human_messages = any(msg.get('role') == 'agent' and str(msg.get('content', '')).strip() for msg in messages)
+    has_ai_messages = any(msg.get('role') == 'bot' and str(msg.get('content', '')).strip() for msg in messages)
+
+    if owner == 'humano' or has_human_messages:
+        resolution_source = 'humano'
+        resolution_label = 'Resuelta por humano'
+    elif has_ai_messages:
+        resolution_source = 'ia'
+        resolution_label = 'Resuelta por IA'
+    else:
+        resolution_source = 'mixta'
+        resolution_label = 'Resolucion mixta'
+
+    return {
+        'resolution_owner': owner,
+        'resolution_source': resolution_source,
+        'resolution_label': resolution_label,
+        'assigned_agent_id': str(getattr(conversation, 'assigned_agent_id', '') or ''),
+        'has_human_messages': has_human_messages,
+        'has_ai_messages': has_ai_messages,
+    }
 
 
 def _extract_learnings_with_llm(conversation_text: str, organization_name: str, organization_id: str = '') -> list[dict]:
@@ -237,6 +296,8 @@ def run_learning_engine(conversation_id: str) -> dict:
 
     org_id_str = str(org.id)
     conversation_text = _build_conversation_summary(messages)
+    source_meta = _learning_source_metadata(messages)
+    conversation_meta = _conversation_learning_metadata(conversation, messages)
     learnings = _extract_learnings_with_llm(conversation_text, org_name, org_id_str)
 
     created = 0
@@ -257,6 +318,7 @@ def run_learning_engine(conversation_id: str) -> dict:
         fingerprint = _fingerprint_llm(title)
         embedding = _generate_embedding(f'{title}\n{content}', org_id_str)
 
+        base_confidence = 0.84 if conversation_meta['resolution_source'] == 'humano' else 0.78
         candidate, was_created = LearningCandidate.objects.get_or_create(
             organization=org,
             kind='faq',
@@ -266,7 +328,7 @@ def run_learning_engine(conversation_id: str) -> dict:
                 'title': title,
                 'source_question': title,
                 'proposed_answer': content,
-                'confidence': 0.78,
+                'confidence': base_confidence,
                 'evidence_count': 1,
                 'status': 'pending',
                 'metadata': {
@@ -274,6 +336,8 @@ def run_learning_engine(conversation_id: str) -> dict:
                     'tags': tags,
                     'embedding': embedding,
                     'conversation_id': str(conversation_id),
+                    **source_meta,
+                    **conversation_meta,
                 },
             },
         )
@@ -281,10 +345,12 @@ def run_learning_engine(conversation_id: str) -> dict:
             # Refresh content and bump confidence on repeat detection
             candidate.proposed_answer = content
             candidate.evidence_count += 1
-            candidate.confidence = min(0.95, round(0.78 + candidate.evidence_count * 0.04, 2))
+            candidate.confidence = min(0.97, round(base_confidence + candidate.evidence_count * 0.04, 2))
             meta = {**(candidate.metadata or {})}
             meta['embedding'] = embedding
             meta['tags'] = tags
+            meta.update(source_meta)
+            meta.update(conversation_meta)
             candidate.metadata = meta
             candidate.save(update_fields=['proposed_answer', 'evidence_count', 'confidence', 'metadata', 'updated_at'])
             updated += 1
@@ -324,6 +390,8 @@ def run_learning_engine(conversation_id: str) -> dict:
                         'source': 'style_llm',
                         'conversation_id': str(conversation_id),
                         'example': example,
+                        **source_meta,
+                        **conversation_meta,
                     },
                 },
             )
@@ -520,8 +588,6 @@ def synthesize_playbook_from_kb(org_id: str) -> dict:
                 synthesis['buyer_model'],
             )
         if sales_agent_profile:
-            sales_agent_profile['what_you_sell'] = sales_agent_profile.get('what_you_sell') or settings.get('what_you_sell', '')
-            sales_agent_profile['who_you_sell_to'] = sales_agent_profile.get('who_you_sell_to') or settings.get('who_you_sell_to', '')
             sales_agent_profile['commerce_rules'] = sales_agent_profile.get('commerce_rules') or settings.get('commerce_rules') or {}
             settings['sales_agent_profile'] = sales_agent_profile
 

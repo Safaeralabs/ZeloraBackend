@@ -15,6 +15,7 @@ class KBArticleViewSet(OrgScopedMixin, viewsets.ModelViewSet):
     serializer_class = KBArticleSerializer
     filterset_fields = ['status', 'category']
     search_fields = ['title', 'content']
+    pagination_class = None  # return all articles; frontend loads them all at once
 
     def get_queryset(self):
         return KBArticle.objects.filter(organization=self.request.user.organization)

@@ -373,6 +373,7 @@ class SalesAgentPromptContextTests(SimpleTestCase):
         self.assertIn('Compradores ideales', prompt)
         self.assertIn('Regla de descuentos', prompt)
         self.assertIn('Frases a evitar', prompt)
+        self.assertIn('si hay conflicto entre la knowledge base libre y las reglas comerciales estructuradas', prompt.lower())
 
     def test_context_block_includes_operational_brand_memory(self):
         conversation = MagicMock()
@@ -425,6 +426,8 @@ class SalesAgentPromptContextTests(SimpleTestCase):
         self.assertIn('Buyer model', block)
         self.assertIn('Frases a evitar', block)
         self.assertIn('Regla devoluciones', block)
+        self.assertIn('Reglas estructuradas prioritarias', block)
+        self.assertIn('metodos_de_pago', block)
 
 
 class SalesAgentBrandScopeTests(SimpleTestCase):

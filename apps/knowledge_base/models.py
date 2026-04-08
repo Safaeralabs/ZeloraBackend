@@ -13,20 +13,20 @@ class KBArticle(models.Model):
         ('archived', 'Archived'),
     ]
 
-    # Purpose controls how the Sales Agent uses this article.
-    # faq          → general Q&A, always injected in snapshots
-    # objection    → how to handle specific buyer objections (pulled on checkout_blocked / lost stages)
-    # closing      → closing language / techniques (pulled on intent_to_buy / follow_up stages)
-    # brand_voice  → on-brand example responses (pulled every message alongside faq)
-    # policy       → business policies — payments, returns, shipping (pulled when customer asks)
-    # product_context → deep product knowledge (pulled on considering stage)
+    # Purpose controls how and when the Sales Agent uses this article.
+    #
+    # faq          → baseline: siempre inyectado. Preguntas frecuentes antes de comprar.
+    # business     → discovering/considering: todo sobre el negocio — contexto de producto,
+    #                diferenciadores, propuesta de valor, testimonios. Fusiona product_context + why_us.
+    # sales_scripts → checkout_blocked/lost/follow_up/intent_to_buy: cómo responder objeciones
+    #                y cómo cerrar. Fusiona objection + closing.
+    # policy       → intent_to_buy/human_handoff: políticas del negocio —
+    #                devoluciones, envíos, garantías, formas de pago.
     PURPOSE_CHOICES = [
-        ('faq', 'FAQ General'),
-        ('objection', 'Manejo de Objeción'),
-        ('closing', 'Técnica de Cierre'),
-        ('brand_voice', 'Voz de Marca'),
-        ('policy', 'Política del Negocio'),
-        ('product_context', 'Contexto de Producto'),
+        ('faq',           'Preguntas frecuentes'),
+        ('business',      'Sobre el negocio'),
+        ('sales_scripts', 'Scripts de venta'),
+        ('policy',        'Políticas del negocio'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

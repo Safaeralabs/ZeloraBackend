@@ -13,7 +13,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import Organization, Contact
+from .models import Organization, Contact, SecurityAuditLog
 from .serializers import (
     CustomTokenObtainPairSerializer,
     OrganizationSerializer,
@@ -26,6 +26,7 @@ from .serializers import (
     UserPasswordSerializer,
     ContactSerializer,
     ContactListSerializer,
+    SecurityAuditLogSerializer,
 )
 from core.permissions import IsOrganizationAdmin, IsOrganizationMember, IsOrganizationAccountAdmin
 from core.mixins import OrgScopedMixin
@@ -45,8 +46,11 @@ def _merge_nested(existing: dict | None, patch: dict | None) -> dict:
 
 def _default_sales_agent_profile() -> dict:
     return {
-        'what_you_sell': '',
-        'who_you_sell_to': '',
+        'agent_persona': '',
+        'mission_statement': '',
+        'greeting_message': '',
+        'response_language': 'auto',
+        'competitor_response': '',
         'brand_profile': {
             'tone_of_voice': '',
             'formality_level': 'balanced',
@@ -86,6 +90,20 @@ def _default_sales_agent_profile() -> dict:
     }
 
 
+def _default_general_agent_profile() -> dict:
+    return {
+        'agent_persona': '',
+        'mission_statement': '',
+        'scope_notes': '',
+        'allowed_topics': [],
+        'blocked_topics': [],
+        'handoff_to_sales_when': [],
+        'handoff_to_human_when': [],
+        'greeting_message': '',
+        'response_language': 'auto',
+    }
+
+
 def _hydrate_sales_agent_profile(settings_payload: dict | None) -> dict:
     settings_payload = settings_payload or {}
     base = _default_sales_agent_profile()
@@ -94,8 +112,6 @@ def _hydrate_sales_agent_profile(settings_payload: dict | None) -> dict:
     return {
         **base,
         **stored,
-        'what_you_sell': stored.get('what_you_sell', settings_payload.get('what_you_sell', '')),
-        'who_you_sell_to': stored.get('who_you_sell_to', settings_payload.get('who_you_sell_to', '')),
         'brand_profile': _merge_nested(
             _merge_nested(base.get('brand_profile'), settings_payload.get('brand_profile')),
             stored.get('brand_profile'),
@@ -115,10 +131,18 @@ def _hydrate_sales_agent_profile(settings_payload: dict | None) -> dict:
     }
 
 
+def _hydrate_general_agent_profile(settings_payload: dict | None) -> dict:
+    settings_payload = settings_payload or {}
+    base = _default_general_agent_profile()
+    stored = settings_payload.get('general_agent_profile') or {}
+    return {
+        **base,
+        **stored,
+    }
+
+
 def _sync_legacy_sales_fields(settings_payload: dict, sales_agent_profile: dict) -> dict:
     settings_payload['sales_agent_profile'] = sales_agent_profile
-    settings_payload['what_you_sell'] = sales_agent_profile.get('what_you_sell', '')
-    settings_payload['who_you_sell_to'] = sales_agent_profile.get('who_you_sell_to', '')
     settings_payload['brand_profile'] = sales_agent_profile.get('brand_profile', {})
     settings_payload['sales_playbook'] = sales_agent_profile.get('sales_playbook', {})
     settings_payload['buyer_model'] = sales_agent_profile.get('buyer_model', {})
@@ -154,6 +178,100 @@ def _compute_activation_tasks(organization, settings_payload: dict) -> dict:
     }
 
 
+# ─── Security Helpers ───────────────────────────────────────────────────────────
+
+def _get_client_ip(request) -> str:
+    """Extract real client IP from request (handles proxies)."""
+    xff = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR', '')
+
+
+def _get_org_security_settings(org) -> dict:
+    """Return the security_settings dict stored in the org's onboarding ChannelConfig."""
+    try:
+        from apps.channels_config.models import ChannelConfig
+        config = ChannelConfig.objects.get(organization=org, channel='onboarding')
+        return (config.settings or {}).get('security_settings', {})
+    except Exception:
+        return {}
+
+
+def _check_ip_blocked(security_settings: dict, client_ip: str) -> bool:
+    """Return True if client_ip should be blocked according to the org IP allowlist.
+
+    Logic: if there are active allowlist entries, the IP must match at least one CIDR.
+    Empty or all-inactive allowlist → no restriction (returns False).
+    """
+    import ipaddress
+    allowlist = security_settings.get('ip_allowlist', [])
+    active_entries = [e for e in allowlist if e.get('activo', True)]
+    if not active_entries:
+        return False
+    try:
+        client_addr = ipaddress.ip_address(client_ip)
+        for entry in active_entries:
+            try:
+                network = ipaddress.ip_network(entry.get('cidr', ''), strict=False)
+                if client_addr in network:
+                    return False
+            except ValueError:
+                continue
+        return True
+    except ValueError:
+        return False  # Can't parse IP → allow
+
+
+def _validate_password_policy(security_settings: dict, password: str) -> list[str]:
+    """Return list of human-readable error strings. Empty → password is valid."""
+    import re
+    errors = []
+    min_len = security_settings.get('min_password_length', 8)
+    if len(password) < min_len:
+        errors.append(f'La contrasena debe tener al menos {min_len} caracteres.')
+    if security_settings.get('require_special_chars'):
+        if not re.search(r'[^A-Za-z0-9]', password):
+            errors.append('La contrasena debe incluir al menos un caracter especial (!@#$...).')
+    if security_settings.get('require_numbers'):
+        if not re.search(r'[0-9]', password):
+            errors.append('La contrasena debe incluir al menos un numero.')
+    return errors
+
+
+def _log_security_event(
+    org,
+    event_type: str,
+    description: str,
+    request=None,
+    actor=None,
+    actor_email: str = '',
+    ip_address: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Create a SecurityAuditLog entry. Never raises — audit failures must not break normal flow."""
+    try:
+        resolved_ip = ip_address
+        if resolved_ip is None and request is not None:
+            resolved_ip = _get_client_ip(request) or None
+        user_agent = ''
+        if request is not None:
+            user_agent = (request.META.get('HTTP_USER_AGENT', '') or '')[:300]
+        resolved_email = actor_email or (actor.email if actor else '')
+        SecurityAuditLog.objects.create(
+            organization=org,
+            actor=actor,
+            actor_email=resolved_email,
+            event_type=event_type,
+            event_description=description,
+            ip_address=resolved_ip or None,
+            user_agent=user_agent,
+            metadata=metadata or {},
+        )
+    except Exception:
+        pass
+
+
 # ─── Authentication ─────────────────────────────────────────────────────────────
 
 class LoginView(TokenObtainPairView):
@@ -165,15 +283,65 @@ class LoginView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
     def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
-        if response.status_code == 200:
-            # Update last_seen
+        email = (request.data.get('email', '') or '').strip().lower()
+        client_ip = _get_client_ip(request)
+
+        # Pre-fetch user for org context (needed for audit log even on failure)
+        try:
+            target_user = User.objects.select_related('organization').get(email__iexact=email)
+            org = target_user.organization
+        except User.DoesNotExist:
+            target_user = None
+            org = None
+
+        try:
+            response = super().post(request, *args, **kwargs)
+        except Exception:
+            if org:
+                _log_security_event(
+                    org=org,
+                    event_type='login_failed',
+                    description=f'Credenciales invalidas para {email}',
+                    ip_address=client_ip or None,
+                    actor_email=email,
+                )
+            raise
+
+        if response.status_code == 200 and target_user and org:
+            # Check IP allowlist
+            security_settings = _get_org_security_settings(org)
+            if _check_ip_blocked(security_settings, client_ip):
+                _log_security_event(
+                    org=org,
+                    event_type='login_blocked_ip',
+                    description=f'Acceso bloqueado desde IP no autorizada: {client_ip}',
+                    ip_address=client_ip or None,
+                    actor=target_user,
+                    actor_email=email,
+                )
+                return Response(
+                    {'detail': 'Acceso denegado: su direccion IP no esta en la lista blanca de la organizacion.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Log successful login
+            _log_security_event(
+                org=org,
+                event_type='login_success',
+                description=f'Login exitoso desde {client_ip}',
+                request=request,
+                ip_address=client_ip or None,
+                actor=target_user,
+                actor_email=email,
+            )
+
             try:
-                email = request.data.get('email', '')
-                User.objects.filter(email=email).update(last_seen=timezone.now())
+                target_user.last_seen = timezone.now()
+                target_user.save(update_fields=['last_seen'])
             except Exception:
                 pass
-            logger.info('user_login', email=request.data.get('email', ''))
+            logger.info('user_login', email=email)
+
         return response
 
 
@@ -308,14 +476,35 @@ class AgentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         org = self.request.user.organization
-        # Check agent limit
         if org.active_agent_count >= org.max_agents:
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied(
                 f'Agent limit reached ({org.max_agents}). Upgrade your plan to add more agents.'
             )
-        serializer.save(organization=org)
+        agent = serializer.save(organization=org)
         logger.info('agent_created', org_id=str(org.id), email=serializer.validated_data.get('email'))
+        _log_security_event(
+            org=org,
+            event_type='agent_created',
+            description=f'Agente creado: {agent.email}',
+            request=self.request,
+            actor=self.request.user,
+            actor_email=self.request.user.email,
+        )
+
+    def perform_destroy(self, instance):
+        org = instance.organization
+        email = instance.email
+        instance.delete()
+        if org:
+            _log_security_event(
+                org=org,
+                event_type='agent_deleted',
+                description=f'Agente eliminado: {email}',
+                request=self.request,
+                actor=self.request.user,
+                actor_email=self.request.user.email,
+            )
 
     @action(detail=False, methods=['get', 'put', 'patch'], permission_classes=[IsOrganizationMember])
     def me(self, request):
@@ -337,8 +526,29 @@ class AgentViewSet(viewsets.ModelViewSet):
         """POST /api/auth/agents/change_password/"""
         serializer = UserPasswordSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
-        request.user.set_password(serializer.validated_data['new_password'])
+        new_password = serializer.validated_data['new_password']
+
+        # Validate against org password policy
+        org = request.user.organization
+        if org:
+            security_settings = _get_org_security_settings(org)
+            policy_errors = _validate_password_policy(security_settings, new_password)
+            if policy_errors:
+                return Response({'detail': policy_errors[0]}, status=status.HTTP_400_BAD_REQUEST)
+
+        request.user.set_password(new_password)
         request.user.save(update_fields=['password'])
+
+        if org:
+            _log_security_event(
+                org=org,
+                event_type='password_changed',
+                description=f'Contrasena cambiada por {request.user.email}',
+                request=request,
+                actor=request.user,
+                actor_email=request.user.email,
+            )
+
         logger.info('password_changed', user_id=str(request.user.id))
         return Response({'message': 'Password changed successfully'})
 
@@ -426,6 +636,8 @@ class OnboardingProfileView(generics.GenericAPIView):
                 'settings': {
                     'what_you_sell': '',
                     'who_you_sell_to': '',
+                    'general_agent_name': 'General Agent',
+                    'general_agent_profile': _default_general_agent_profile(),
                     'sales_agent_name': 'Sales Agent',
                     'sales_agent_profile': _default_sales_agent_profile(),
                     'quick_knowledge_text': '',
@@ -467,8 +679,15 @@ class OnboardingProfileView(generics.GenericAPIView):
                         'sentiment_analysis': True,
                         'auto_summary': True,
                         'qa_scoring': True,
-                        'sales_agent': {
+                        'general_agent': {
                             'enabled': True,
+                            'trial_mode': True,
+                            'model_name': 'gpt-4.1-nano',
+                            'handoff_mode': 'balanceado',
+                            'max_response_length': 'brief',
+                        },
+                        'sales_agent': {
+                            'enabled': False,
                             'autonomy_level': 'semi_autonomo',
                             'followup_mode': 'suave',
                             'max_followups': 1,
@@ -535,6 +754,8 @@ class OnboardingProfileView(generics.GenericAPIView):
         config = self._get_or_create_onboarding_config(org)
         settings_payload = {**(config.settings or {})}
         settings_payload['activation_tasks'] = _compute_activation_tasks(org, settings_payload)
+        settings_payload['general_agent_name'] = settings_payload.get('general_agent_name') or 'General Agent'
+        settings_payload['general_agent_profile'] = _hydrate_general_agent_profile(settings_payload)
         settings_payload['sales_agent_name'] = settings_payload.get('sales_agent_name') or 'Sales Agent'
         settings_payload['sales_agent_profile'] = _hydrate_sales_agent_profile(settings_payload)
         payload = {
@@ -578,6 +799,7 @@ class OnboardingProfileView(generics.GenericAPIView):
             'contact_phone',
             'what_you_sell',
             'who_you_sell_to',
+            'general_agent_name',
             'sales_agent_name',
             'quick_knowledge_text',
             'quick_knowledge_links',
@@ -599,6 +821,7 @@ class OnboardingProfileView(generics.GenericAPIView):
             'ai_preferences',
             'optimization_profile',
             'activation_tasks',
+            'security_settings',
         ]:
             if key in data:
                 settings_payload[key] = _merge_nested(settings_payload.get(key), data[key])
@@ -609,8 +832,6 @@ class OnboardingProfileView(generics.GenericAPIView):
             next_sales_agent_profile = {
                 **current_sales_agent_profile,
                 **incoming_profile,
-                'what_you_sell': incoming_profile.get('what_you_sell', current_sales_agent_profile.get('what_you_sell', '')),
-                'who_you_sell_to': incoming_profile.get('who_you_sell_to', current_sales_agent_profile.get('who_you_sell_to', '')),
                 'brand_profile': _merge_nested(current_sales_agent_profile.get('brand_profile'), incoming_profile.get('brand_profile')),
                 'sales_playbook': _merge_nested(current_sales_agent_profile.get('sales_playbook'), incoming_profile.get('sales_playbook')),
                 'buyer_model': _merge_nested(current_sales_agent_profile.get('buyer_model'), incoming_profile.get('buyer_model')),
@@ -618,6 +839,16 @@ class OnboardingProfileView(generics.GenericAPIView):
             }
             settings_payload = _sync_legacy_sales_fields(settings_payload, next_sales_agent_profile)
 
+        if 'general_agent_profile' in data:
+            current_general_agent_profile = _hydrate_general_agent_profile(settings_payload)
+            incoming_profile = data['general_agent_profile'] or {}
+            settings_payload['general_agent_profile'] = {
+                **current_general_agent_profile,
+                **incoming_profile,
+            }
+
+        settings_payload['general_agent_name'] = settings_payload.get('general_agent_name') or 'General Agent'
+        settings_payload['general_agent_profile'] = _hydrate_general_agent_profile(settings_payload)
         settings_payload['sales_agent_name'] = settings_payload.get('sales_agent_name') or 'Sales Agent'
         settings_payload['sales_agent_profile'] = _hydrate_sales_agent_profile(settings_payload)
 
@@ -626,6 +857,17 @@ class OnboardingProfileView(generics.GenericAPIView):
         config.is_active = True
         config.settings = settings_payload
         config.save(update_fields=['is_active', 'settings', 'updated_at'])
+
+        # Audit security settings changes
+        if 'security_settings' in data:
+            _log_security_event(
+                org=org,
+                event_type='security_settings_changed',
+                description=f'Configuracion de seguridad actualizada por {request.user.email}',
+                request=request,
+                actor=request.user,
+                actor_email=request.user.email,
+            )
 
         response_payload = {
             'organization_name': org.name,
@@ -687,3 +929,41 @@ class OnboardingQuickKnowledgeUploadView(generics.GenericAPIView):
             }).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+# ─── Security Audit Log ─────────────────────────────────────────────────────────
+
+class SecurityAuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    GET /api/auth/audit-log/            → Paginated audit log for the org (admin only)
+    GET /api/auth/audit-log/export_csv/ → Download CSV
+    """
+    permission_classes = [IsOrganizationAdmin]
+    serializer_class = SecurityAuditLogSerializer
+
+    def get_queryset(self):
+        return SecurityAuditLog.objects.filter(
+            organization=self.request.user.organization
+        ).order_by('-created_at')[:200]
+
+    @action(detail=False, methods=['get'])
+    def export_csv(self, request):
+        import csv
+        from django.http import HttpResponse
+        qs = SecurityAuditLog.objects.filter(
+            organization=request.user.organization
+        ).order_by('-created_at')[:500]
+        response = HttpResponse(content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = 'attachment; filename="security_audit_log.csv"'
+        writer = csv.writer(response)
+        writer.writerow(['Timestamp', 'Tipo', 'Descripcion', 'Usuario', 'IP', 'User Agent'])
+        for log in qs:
+            writer.writerow([
+                log.created_at.isoformat(),
+                log.event_type,
+                log.event_description,
+                log.actor_email,
+                log.ip_address or '',
+                log.user_agent or '',
+            ])
+        return response

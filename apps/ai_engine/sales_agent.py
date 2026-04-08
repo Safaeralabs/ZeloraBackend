@@ -103,6 +103,8 @@ class BusinessContext:
         'prometer tiempos de entrega no validados',
         'modificar precios',
         'cerrar pedidos manualmente',
+        'redirigir al usuario a la pagina web como primera respuesta cuando la informacion esta disponible en el chat',
+        'decir "llame a nuestro numero" o "acercate a la oficina" sin antes haber dado la informacion disponible por este canal',
     ])
     has_returns_policy: bool = True
     returns_window_days: int = 15
@@ -283,6 +285,23 @@ class SalesAgent:
                 sales_ctx=sales_ctx,
             )
             if _db_result is None:
+                # Try intent-based flow lookup first (custom intents from AI Router)
+                _router_intent = getattr(router_decision, 'intent', None) if router_decision else None
+                if _router_intent:
+                    from apps.flows.trigger import find_flow_by_intent
+                    _intent_flow = find_flow_by_intent(
+                        organization=conversation.organization,
+                        intent=_router_intent,
+                        channel=_channel,
+                    )
+                    if _intent_flow:
+                        _db_result = _engine._start_flow(
+                            conversation=conversation,
+                            flow=_intent_flow,
+                            message_text=message_text,
+                            sales_ctx=sales_ctx,
+                        )
+            if _db_result is None:
                 _db_result = _engine.find_and_activate(
                     conversation=conversation,
                     message_text=message_text,
@@ -321,21 +340,7 @@ class SalesAgent:
         except Exception as _flow_exc:
             logger.warning('db_flow_engine_error', error=str(_flow_exc))
 
-        # ── Legacy hardcoded flows (Comfaguajira only) ─────────────────────
-        qualification_flow = _handle_affiliation_qualification_flow(
-            message_text=message_text,
-            conversation=conversation,
-            sales_ctx=sales_ctx,
-        )
-        if qualification_flow:
-            return qualification_flow
-        service_flow = _handle_comfaguajira_service_flow(
-            message_text=message_text,
-            conversation=conversation,
-            sales_ctx=sales_ctx,
-        )
-        if service_flow:
-            return service_flow
+        # Legacy hardcoded Comfaguajira flows removed — superseded by DB-driven flows
         buyer = _profile_buyer(text, sales_ctx.buyer_model)
         stage, confidence = _classify_stage(text, sales_ctx.buyer_model)
         close_signals = _detect_close_signals(text)
@@ -585,8 +590,8 @@ def _load_sales_context(organization) -> SalesContext:
             org_name=getattr(organization, 'name', ''),
             org_id=str(getattr(organization, 'id', '') or ''),
             org_slug=getattr(organization, 'slug', ''),
-            what_you_sell=sales_agent_profile.get('what_you_sell') or settings.get('what_you_sell', ''),
-            who_you_sell_to=sales_agent_profile.get('who_you_sell_to') or settings.get('who_you_sell_to', ''),
+            what_you_sell=settings.get('what_you_sell', ''),
+            who_you_sell_to=settings.get('who_you_sell_to', ''),
             website=getattr(organization, 'website', '') or settings.get('website', ''),
             industry=getattr(organization, 'industry', '') or settings.get('industry', ''),
             country=getattr(organization, 'country', '') or settings.get('country', ''),
@@ -1799,11 +1804,13 @@ def _llm_reply(
             model = router_decision.model_name
 
         import time as _time
+        is_first = _conversation_user_message_count(conversation) <= 1
+        chat_history = _build_chat_history_messages(conversation)
         t0 = _time.monotonic()
         completion = client.chat.completions.create(
             model=model,
             messages=[
-                {'role': 'system', 'content': _build_system_prompt(sales_ctx)},
+                {'role': 'system', 'content': _build_system_prompt(sales_ctx, is_first_message=is_first)},
                 {'role': 'system', 'content': _build_context_block(
                     stage=stage,
                     buyer=buyer,
@@ -1813,6 +1820,7 @@ def _llm_reply(
                     sales_ctx=sales_ctx,
                     conversation=conversation,
                 )},
+                *chat_history,
                 {'role': 'user', 'content': message_text},
             ],
             max_tokens=180,
@@ -2084,10 +2092,8 @@ def _append_product_links(reply: str, products: list[dict[str, Any]], org_slug: 
         updated_reply = re.sub(r'(\*\*|__)\s*(\[[^\]]+\]\(/shop/[^)]+\))\s*(\*\*|__)', r'\2', updated_reply)
         return updated_reply
 
-    first_link = _product_link(products[0], org_slug)
-    if not first_link:
-        return reply
-    return f'{reply} Puedes ver {first_link}.'
+    # No product was mentioned in the reply — don't force-append an unrelated link.
+    return reply
 
 
 def _payment_option_link(method: str, org_slug: str) -> str:
@@ -2122,7 +2128,7 @@ def _append_payment_links(reply: str, payment_methods: list[str], org_slug: str)
     return reply
 
 
-def _build_system_prompt(sales_ctx: SalesContext) -> str:
+def _build_system_prompt(sales_ctx: SalesContext, *, is_first_message: bool = False) -> str:
     business = sales_ctx.business
     brand = sales_ctx.brand
     playbook = sales_ctx.playbook
@@ -2168,15 +2174,19 @@ def _build_system_prompt(sales_ctx: SalesContext) -> str:
         )
     )
 
-    # Greeting
+    # Greeting — only inject when this is genuinely the first user message
     _greeting_line = (
-        f'Si es el inicio de la conversacion (sin historial previo), saluda con: "{business.greeting_message}"\n'
-        if business.greeting_message else ''
+        f'Este es el primer mensaje del cliente. Saluda con: "{business.greeting_message}"\n'
+        if (is_first_message and business.greeting_message) else
+        'NO saludes de nuevo. Ya existe historial de conversacion. Ve directo al punto.\n'
+        if not is_first_message else ''
     )
 
     return (
         f'{_persona_line}'
         f'Trabajas para la marca {brand.brand_name or business.org_name or "la empresa"}.\n'
+        'PRINCIPIO FUNDAMENTAL: Tu trabajo es resolver TODO dentro del chat. El cliente nunca deberia tener que salir de esta conversacion para obtener informacion. Si la respuesta existe en tu knowledge base o en el contexto disponible, dasela aqui y ahora. Redirigir a la web, a un numero de telefono o a una oficina como primera respuesta esta prohibido.\n'
+        'La unica excepcion es cuando el tramite requiere presencia fisica obligatoria (ej. firma notarial, entrega de documentos originales) — y aun asi, primero da toda la informacion posible aqui.\n'
         'Tu objetivo principal no es solo responder: es ayudar al cliente a tomar una decision de compra.\n'
         'Debes comportarte como un vendedor experto: entiende la necesidad, pregunta cuando falte informacion, recomienda productos adecuados, resuelve dudas y objeciones y guia la conversacion hacia la compra.\n'
         'Nunca respondas de forma pasiva, fria o generica.\n'
@@ -2184,6 +2194,8 @@ def _build_system_prompt(sales_ctx: SalesContext) -> str:
         'Si el cliente se enfria o dice que luego vuelve, haz seguimiento comercial suave: resume la mejor opcion y cierra con una sola pregunta util.\n'
         'Nunca seas abusivo ni spam. No presiones con urgencia falsa.\n'
         'Solo puedes usar informacion real del negocio. Nunca inventes precios, stock, politicas, tiempos de envio ni promociones.\n'
+        'Si hay conflicto entre la knowledge base libre y las reglas comerciales estructuradas, siempre debes priorizar las reglas estructuradas.\n'
+        'Las reglas estructuradas son la verdad operativa para pagos, envios, descuentos, devoluciones, inventario y promesas permitidas.\n'
         f'{_length_instruction}\n'
         f'{_lang_instruction}\n'
         'No metas varias ideas densas en un mismo mensaje. Da una recomendacion concreta y una sola pregunta util.\n'
@@ -2261,6 +2273,7 @@ def _build_context_block(
     )
     catalog_snapshot = _build_catalog_snapshot_block(sales_ctx.catalog_snapshot)
     full_knowledge_snapshot = _build_knowledge_snapshot_block(sales_ctx.knowledge_snapshot)
+    structured_rules = _build_structured_rules_block(sales_ctx)
     product_lines = ['Sin productos encontrados para esta consulta.']
     if products:
         product_lines = []
@@ -2297,6 +2310,7 @@ def _build_context_block(
         f'Frases a evitar: {", ".join(brand.avoid_phrases[:4]) or "ninguna"}\n'
         f'Playbook activo: apertura={playbook.opening_style or "n/d"} | recomendacion={playbook.recommendation_style or "n/d"} | objeciones={playbook.objection_style or "n/d"} | cierre={playbook.closing_style or "n/d"} | follow_up={playbook.follow_up_style or "n/d"} | upsell={playbook.upsell_style or "n/d"}\n'
         f'Buyer model: ideales={", ".join((buyer_model.get("ideal_buyers") or [])[:4]) or "n/d"} | objeciones={", ".join((buyer_model.get("common_objections") or [])[:4]) or "n/d"} | compra={", ".join((buyer_model.get("purchase_signals") or [])[:4]) or "n/d"} | bajo_interes={", ".join((buyer_model.get("low_intent_signals") or [])[:4]) or "n/d"}\n'
+        f'Reglas estructuradas prioritarias:\n{structured_rules}\n'
         f'Catalogo activo:\n{catalog_snapshot}\n'
         f'Knowledge base completa resumida:\n{full_knowledge_snapshot}\n'
         f'Historial reciente:\n{history}\n'
@@ -2341,6 +2355,34 @@ def _build_knowledge_snapshot_block(knowledge_snapshot: list[dict[str, Any]]) ->
     return '\n'.join(lines)
 
 
+def _build_structured_rules_block(sales_ctx: SalesContext) -> str:
+    rules = sales_ctx.commerce_rules
+    business = sales_ctx.business
+
+    lines: list[str] = []
+    if business.payment_methods:
+        lines.append(f'- metodos_de_pago: {", ".join(business.payment_methods[:5])}')
+    if rules.discount_policy:
+        lines.append(f'- descuentos: {rules.discount_policy}')
+    if rules.negotiation_policy:
+        lines.append(f'- negociacion: {rules.negotiation_policy}')
+    if rules.inventory_promise_rule:
+        lines.append(f'- inventario: {rules.inventory_promise_rule}')
+    if rules.delivery_promise_rule:
+        lines.append(f'- entrega: {rules.delivery_promise_rule}')
+    if business.shipping_policy:
+        lines.append(f'- envios: {business.shipping_policy}')
+    elif business.shipping_coverage or business.shipping_avg_days:
+        lines.append(f'- envios: cobertura={business.shipping_coverage}; tiempo={business.shipping_avg_days}')
+    if rules.return_policy_summary:
+        lines.append(f'- devoluciones: {rules.return_policy_summary}')
+    if rules.forbidden_claims:
+        lines.append(f'- claims_prohibidos: {", ".join(rules.forbidden_claims[:5])}')
+    if rules.forbidden_promises:
+        lines.append(f'- promesas_prohibidas: {", ".join(rules.forbidden_promises[:5])}')
+    return '\n'.join(lines) if lines else 'Sin reglas estructuradas definidas.'
+
+
 def _build_conversation_history(conversation) -> str:
     try:
         if conversation is None:
@@ -2356,6 +2398,37 @@ def _build_conversation_history(conversation) -> str:
         return '\n'.join(items) if items else 'Sin historial.'
     except Exception:
         return 'Sin historial.'
+
+
+def _build_chat_history_messages(conversation) -> list[dict]:
+    """
+    Returns conversation history as real OpenAI message turns so the model
+    has genuine context of prior exchanges. Excludes the current (most recent)
+    user message — it is added separately as the final 'user' turn.
+    """
+    if not conversation:
+        return []
+    try:
+        # Skip the latest message (the incoming one) — fetch the 6 before it
+        all_msgs = list(conversation.messages.order_by('-timestamp')[:7])
+        prior = list(reversed(all_msgs[1:]))  # oldest first, skip index 0 = latest
+        result = []
+        for msg in prior:
+            role = 'user' if msg.role == 'user' else 'assistant'
+            content = ' '.join((msg.content or '').split()).strip()
+            if content:
+                result.append({'role': role, 'content': content[:500]})
+        return result
+    except Exception:
+        return []
+
+
+def _conversation_user_message_count(conversation) -> int:
+    """Returns how many user messages this conversation has (including the current one)."""
+    try:
+        return conversation.messages.filter(role='user').count() if conversation else 0
+    except Exception:
+        return 0
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -2387,18 +2460,18 @@ def _embed_query(text: str) -> list[float] | None:
 
 # Maps conversation stage → KB purposes to prioritize (fetched first, injected top of context)
 _STAGE_PURPOSE_MAP: dict[str, list[str]] = {
-    STAGE_CHECKOUT_BLOCKED:  ['objection', 'policy'],
-    STAGE_CONSIDERING:       ['product_context', 'faq'],
-    STAGE_INTENT_TO_BUY:     ['closing', 'policy'],
-    STAGE_FOLLOW_UP_NEEDED:  ['closing', 'brand_voice'],
-    STAGE_LOST:              ['objection', 'closing'],
-    STAGE_CLOSED_LOST:       ['objection'],
-    STAGE_CLOSED_WON:        ['closing', 'brand_voice'],
+    STAGE_DISCOVERING:       ['faq', 'business'],
+    STAGE_CONSIDERING:       ['business', 'faq'],
+    STAGE_INTENT_TO_BUY:     ['sales_scripts', 'policy'],
+    STAGE_FOLLOW_UP_NEEDED:  ['sales_scripts'],
+    STAGE_LOST:              ['sales_scripts'],
+    STAGE_CLOSED_LOST:       ['sales_scripts'],
+    STAGE_CLOSED_WON:        ['sales_scripts'],
+    STAGE_CHECKOUT_BLOCKED:  ['sales_scripts', 'policy'],
     STAGE_HUMAN_HANDOFF:     ['policy'],
-    STAGE_DISCOVERING:       ['faq', 'brand_voice'],
 }
 # Always added unless already satisfied by stage-specific results
-_BASELINE_PURPOSES = ['faq', 'brand_voice']
+_BASELINE_PURPOSES = ['faq', 'business']
 
 
 def _lookup_relevant_knowledge(

@@ -150,7 +150,6 @@ class WebWidgetPublicSerializer(serializers.Serializer):
 class WebWidgetConnectionUpdateSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(required=False)
     widget_name = serializers.CharField(required=False, allow_blank=True)
-    greeting_message = serializers.CharField(required=False, allow_blank=True)
     brand_color = serializers.CharField(required=False, allow_blank=True)
     position = serializers.CharField(required=False, allow_blank=True)
     allowed_domains = serializers.ListField(child=serializers.CharField(), required=False)
@@ -262,7 +261,6 @@ class AppChatPublicSerializer(serializers.Serializer):
 class AppChatConnectionUpdateSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(required=False)
     app_name = serializers.CharField(required=False, allow_blank=True)
-    welcome_message = serializers.CharField(required=False, allow_blank=True)
     primary_color = serializers.CharField(required=False, allow_blank=True)
     accent_color = serializers.CharField(required=False, allow_blank=True)
     page_background_color = serializers.CharField(required=False, allow_blank=True)
@@ -303,6 +301,16 @@ class AppChatConnectionUpdateSerializer(serializers.Serializer):
     require_authentication = serializers.BooleanField(required=False)
     push_enabled = serializers.BooleanField(required=False)
     handoff_enabled = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        for key in ['background_image_url', 'header_logo_url']:
+            value = attrs.get(key)
+            if value is None or value == '':
+                continue
+            normalized = str(value).strip().lower()
+            if normalized.startswith('data:') or normalized.startswith('javascript:'):
+                raise serializers.ValidationError({key: 'Solo se permiten URLs seguras para medios.'})
+        return attrs
 
 
 class AppChatInboundSerializer(serializers.Serializer):
