@@ -79,55 +79,57 @@ class GeneralAgent:
 
 def _load_general_context(organization) -> GeneralAgentContext:
     from apps.channels_config.models import ChannelConfig
+    from apps.channels_config.settings_schema import normalise_settings
 
     cfg = ChannelConfig.objects.filter(organization=organization, channel='onboarding').first()
-    settings_payload = (cfg.settings if cfg else {}) or {}
-    ai_preferences = settings_payload.get('ai_preferences') or {}
-    general_preferences = ai_preferences.get('general_agent') or {}
-    general_profile = settings_payload.get('general_agent_profile') or {}
-    brand_profile = settings_payload.get('brand_profile') or {}
-    what_you_sell = settings_payload.get('what_you_sell', '')
-    who_you_sell_to = settings_payload.get('who_you_sell_to', '')
+    s = normalise_settings((cfg.settings if cfg else {}) or {})
+    op = s['org_profile']
+    ga = s['general_agent']
+
+    what_you_sell = op.get('what_you_sell') or ''
+    who_you_sell_to = op.get('who_you_sell_to') or ''
 
     snippets = _lookup_relevant_knowledge(
         organization=organization,
         query=' '.join(filter(None, [what_you_sell, who_you_sell_to, organization.name])),
+        max_snippets=ga.get('max_kb_snippets') or 4,
     )
 
     return GeneralAgentContext(
-        agent_name=settings_payload.get('general_agent_name') or 'General Agent',
+        agent_name=ga.get('name') or 'General Agent',
         organization_name=organization.name,
         what_you_sell=what_you_sell,
         who_you_sell_to=who_you_sell_to,
-        mission=general_profile.get('mission_statement') or '',
-        agent_persona=general_profile.get('agent_persona') or '',
-        scope_notes=general_profile.get('scope_notes') or '',
-        allowed_topics=[item.strip() for item in (general_profile.get('allowed_topics') or []) if isinstance(item, str) and item.strip()],
-        blocked_topics=[item.strip() for item in (general_profile.get('blocked_topics') or []) if isinstance(item, str) and item.strip()],
-        handoff_to_sales_when=[item.strip() for item in (general_profile.get('handoff_to_sales_when') or []) if isinstance(item, str) and item.strip()],
-        handoff_to_human_when=[item.strip() for item in (general_profile.get('handoff_to_human_when') or []) if isinstance(item, str) and item.strip()],
-        greeting_message=general_profile.get('greeting_message') or '',
-        response_language=general_profile.get('response_language') or 'auto',
-        handoff_mode=general_preferences.get('handoff_mode') or 'balanceado',
-        max_response_length=general_preferences.get('max_response_length') or 'brief',
-        model_name=general_preferences.get('model_name') or 'gpt-4.1-nano',
-        brand_profile=brand_profile,
+        mission=ga.get('mission_statement') or '',
+        agent_persona=ga.get('persona') or '',
+        scope_notes=ga.get('scope_notes') or '',
+        allowed_topics=ga.get('allowed_topics') or [],
+        blocked_topics=ga.get('blocked_topics') or [],
+        handoff_to_sales_when=ga.get('handoff_to_sales_when') or [],
+        handoff_to_human_when=ga.get('handoff_to_human_when') or [],
+        greeting_message=ga.get('greeting_message') or '',
+        response_language=ga.get('response_language') or 'auto',
+        handoff_mode=ga.get('handoff_mode') or 'balanceado',
+        max_response_length=ga.get('max_response_length') or 'brief',
+        model_name=ga.get('model_name') or 'gpt-4.1-nano',
+        brand_profile=op.get('brand') or {},
         knowledge_snippets=snippets,
     )
 
 
-def _lookup_relevant_knowledge(*, organization, query: str) -> list[str]:
+def _lookup_relevant_knowledge(*, organization, query: str, max_snippets: int = 4) -> list[str]:
     terms = [word.strip() for word in (query or '').split() if len(word.strip()) > 3][:6]
     if not terms:
         return []
     filters = Q()
     for term in terms:
         filters |= Q(title__icontains=term) | Q(content__icontains=term)
+    limit = max(1, min(int(max_snippets), 20))
     articles = KBArticle.objects.filter(
         organization=organization,
         status='published',
         is_active=True,
-    ).filter(filters)[:4]
+    ).filter(filters)[:limit]
     return [f'{article.title}: {article.content[:320]}' for article in articles]
 
 

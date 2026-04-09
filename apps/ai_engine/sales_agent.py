@@ -555,6 +555,7 @@ def _check_handoff(text: str, buyer: BuyerProfile, biz_ctx: BusinessContext, pla
 def _load_sales_context(organization) -> SalesContext:
     try:
         from apps.channels_config.models import ChannelConfig
+        from apps.channels_config.settings_schema import normalise_settings
 
         org_id = getattr(organization, 'id', None)
         if not _has_real_identifier(org_id):
@@ -566,18 +567,19 @@ def _load_sales_context(organization) -> SalesContext:
             )
 
         config = ChannelConfig.objects.filter(organization=organization, channel='onboarding').only('settings').first()
-        settings = (config.settings if config else {}) or {}
         app_config = ChannelConfig.objects.filter(organization=organization, channel='app').only('settings').first()
         web_config = ChannelConfig.objects.filter(organization=organization, channel='web').only('settings').first()
         app_settings = (app_config.settings if app_config else {}) or {}
         web_settings = (web_config.settings if web_config else {}) or {}
-        sales_agent_profile = settings.get('sales_agent_profile', {}) or {}
-        brand_cfg = sales_agent_profile.get('brand_profile') or settings.get('brand_profile', {}) or {}
-        playbook_cfg = sales_agent_profile.get('sales_playbook') or settings.get('sales_playbook', {}) or {}
-        rules_cfg = sales_agent_profile.get('commerce_rules') or settings.get('commerce_rules', {}) or {}
-        buyer_model_cfg = sales_agent_profile.get('buyer_model') or settings.get('buyer_model', {}) or {}
-        ai_preferences = settings.get('ai_preferences', {}) or {}
-        sales_agent_preferences = ai_preferences.get('sales_agent', {}) or {}
+
+        s = normalise_settings((config.settings if config else {}) or {})
+        op = s['org_profile']
+        sa = s['sales_agent']
+        brand_cfg = op.get('brand') or {}
+        playbook_cfg = sa.get('playbook') or {}
+        rules_cfg = sa.get('commerce_rules') or {}
+        buyer_model_cfg = sa.get('buyer_model') or {}
+
         logo_url = ''
         try:
             logo = getattr(organization, 'logo', None)
@@ -586,27 +588,28 @@ def _load_sales_context(organization) -> SalesContext:
         except Exception:
             logo_url = ''
 
+        payment_methods = op.get('payment_methods') or ['transferencia bancaria', 'efectivo']
         business = BusinessContext(
             org_name=getattr(organization, 'name', ''),
             org_id=str(getattr(organization, 'id', '') or ''),
             org_slug=getattr(organization, 'slug', ''),
-            what_you_sell=settings.get('what_you_sell', ''),
-            who_you_sell_to=settings.get('who_you_sell_to', ''),
-            website=getattr(organization, 'website', '') or settings.get('website', ''),
-            industry=getattr(organization, 'industry', '') or settings.get('industry', ''),
-            country=getattr(organization, 'country', '') or settings.get('country', ''),
-            brand_tone=brand_cfg.get('tone_of_voice', 'amigable') or 'amigable',
-            payment_methods=settings.get('payment_methods', ['transferencia bancaria', 'efectivo']),
-            shipping_coverage=settings.get('shipping_coverage', 'consultar cobertura'),
-            shipping_avg_days=settings.get('shipping_avg_days', '2-5 dias habiles'),
-            min_order_units=int(settings.get('min_order_units', 1)),
-            max_units_auto_approve=int(settings.get('max_units_auto_approve', 10)),
+            what_you_sell=op.get('what_you_sell') or '',
+            who_you_sell_to=op.get('who_you_sell_to') or '',
+            website=getattr(organization, 'website', '') or op.get('website') or '',
+            industry=getattr(organization, 'industry', '') or op.get('industry') or '',
+            country=getattr(organization, 'country', '') or op.get('country') or '',
+            brand_tone=brand_cfg.get('tone_of_voice') or 'amigable',
+            payment_methods=payment_methods,
+            shipping_coverage=sa.get('shipping_coverage') or 'consultar cobertura',
+            shipping_avg_days=sa.get('shipping_avg_days') or '2-5 dias habiles',
+            min_order_units=int(sa.get('min_order_units') or 1),
+            max_units_auto_approve=int(sa.get('max_units_auto_approve') or 10),
             commercial_policies=[
                 item for item in [
-                    rules_cfg.get('discount_policy', ''),
-                    rules_cfg.get('negotiation_policy', ''),
-                    rules_cfg.get('inventory_promise_rule', ''),
-                    rules_cfg.get('delivery_promise_rule', ''),
+                    rules_cfg.get('discount_policy'),
+                    rules_cfg.get('negotiation_policy'),
+                    rules_cfg.get('inventory_promise_rule'),
+                    rules_cfg.get('delivery_promise_rule'),
                 ] if item
             ],
             forbidden_actions=(
@@ -614,55 +617,66 @@ def _load_sales_context(organization) -> SalesContext:
                 or rules_cfg.get('forbidden_claims')
                 or BusinessContext().forbidden_actions
             ),
-            has_returns_policy=bool(rules_cfg.get('return_policy_summary', '').strip()),
-            returns_window_days=int(settings.get('returns_window_days', 15)),
-            shipping_policy=sales_agent_profile.get('shipping_policy') or rules_cfg.get('shipping_policy', ''),
-            agent_persona=sales_agent_profile.get('agent_persona') or settings.get('agent_persona', ''),
-            greeting_message=sales_agent_profile.get('greeting_message') or settings.get('greeting_message', ''),
-            competitor_response=sales_agent_profile.get('competitor_response') or playbook_cfg.get('competitor_response', ''),
-            response_language=sales_agent_profile.get('response_language') or settings.get('response_language', 'auto'),
-            max_response_length=sales_agent_preferences.get('max_response_length', 'standard') or 'standard',
-            mission=sales_agent_profile.get('mission_statement') or settings.get('mission', '') or settings.get('brand_mission', ''),
+            has_returns_policy=bool((rules_cfg.get('return_policy_summary') or '').strip()),
+            returns_window_days=int(sa.get('returns_window_days') or 15),
+            shipping_policy=sa.get('shipping_policy') or '',
+            agent_persona=sa.get('persona') or '',
+            greeting_message=sa.get('greeting_message') or '',
+            competitor_response=sa.get('competitor_response') or playbook_cfg.get('competitor_response') or '',
+            response_language=sa.get('response_language') or 'auto',
+            max_response_length=sa.get('max_response_length') or 'standard',
+            mission=sa.get('mission_statement') or '',
         )
         brand = BrandProfile(
             brand_name=getattr(organization, 'name', ''),
-            tone_of_voice=brand_cfg.get('tone_of_voice', 'cercano') or 'cercano',
-            formality_level=brand_cfg.get('formality_level', 'balanced') or 'balanced',
-            brand_personality=brand_cfg.get('brand_personality', ''),
-            value_proposition=brand_cfg.get('value_proposition', ''),
+            tone_of_voice=brand_cfg.get('tone_of_voice') or 'cercano',
+            formality_level=brand_cfg.get('formality_level') or 'balanced',
+            brand_personality=brand_cfg.get('brand_personality') or '',
+            value_proposition=brand_cfg.get('value_proposition') or '',
             logo_url=logo_url,
-            primary_color=app_settings.get('primary_color') or web_settings.get('brand_color', ''),
-            accent_color=app_settings.get('accent_color', ''),
-            visual_style=app_settings.get('surface_style') or web_settings.get('position', ''),
-            key_differentiators=brand_cfg.get('key_differentiators', []) or [],
-            preferred_closing_style=brand_cfg.get('preferred_closing_style', 'directo') or 'directo',
-            urgency_style=brand_cfg.get('urgency_style', 'soft') or 'soft',
-            recommended_phrases=brand_cfg.get('recommended_phrases', []) or [],
-            avoid_phrases=brand_cfg.get('avoid_phrases', []) or [],
-            customer_style_notes=brand_cfg.get('customer_style_notes', '') or '',
+            primary_color=app_settings.get('primary_color') or web_settings.get('brand_color') or '',
+            accent_color=app_settings.get('accent_color') or '',
+            visual_style=app_settings.get('surface_style') or web_settings.get('position') or '',
+            key_differentiators=brand_cfg.get('key_differentiators') or [],
+            preferred_closing_style=brand_cfg.get('preferred_closing_style') or 'directo',
+            urgency_style=brand_cfg.get('urgency_style') or 'soft',
+            recommended_phrases=brand_cfg.get('recommended_phrases') or [],
+            avoid_phrases=brand_cfg.get('avoid_phrases') or [],
+            customer_style_notes=brand_cfg.get('customer_style_notes') or '',
         )
         playbook = SalesPlaybook(
-            opening_style=playbook_cfg.get('opening_style', ''),
-            recommendation_style=playbook_cfg.get('recommendation_style', ''),
-            objection_style=playbook_cfg.get('objection_style', ''),
-            closing_style=playbook_cfg.get('closing_style', ''),
-            follow_up_style=playbook_cfg.get('follow_up_style', ''),
-            upsell_style=playbook_cfg.get('upsell_style', ''),
-            escalate_conditions=playbook_cfg.get('escalate_conditions', []) or [],
-            handoff_mode=sales_agent_preferences.get('handoff_mode', 'balanceado') or 'balanceado',
-            competitor_response=sales_agent_profile.get('competitor_response') or playbook_cfg.get('competitor_response', ''),
+            opening_style=playbook_cfg.get('opening_style') or '',
+            recommendation_style=playbook_cfg.get('recommendation_style') or '',
+            objection_style=playbook_cfg.get('objection_style') or '',
+            closing_style=playbook_cfg.get('closing_style') or '',
+            follow_up_style=playbook_cfg.get('follow_up_style') or '',
+            upsell_style=playbook_cfg.get('upsell_style') or '',
+            escalate_conditions=playbook_cfg.get('escalate_conditions') or [],
+            handoff_mode=sa.get('handoff_mode') or 'balanceado',
+            competitor_response=sa.get('competitor_response') or playbook_cfg.get('competitor_response') or '',
         )
         rules = CommerceRules(
-            discount_policy=rules_cfg.get('discount_policy', ''),
-            negotiation_policy=rules_cfg.get('negotiation_policy', ''),
-            inventory_promise_rule=rules_cfg.get('inventory_promise_rule', ''),
-            delivery_promise_rule=rules_cfg.get('delivery_promise_rule', ''),
-            return_policy_summary=rules_cfg.get('return_policy_summary', ''),
-            forbidden_claims=rules_cfg.get('forbidden_claims', []) or [],
-            forbidden_promises=rules_cfg.get('forbidden_promises', []) or [],
+            discount_policy=rules_cfg.get('discount_policy') or '',
+            negotiation_policy=rules_cfg.get('negotiation_policy') or '',
+            inventory_promise_rule=rules_cfg.get('inventory_promise_rule') or '',
+            delivery_promise_rule=rules_cfg.get('delivery_promise_rule') or '',
+            return_policy_summary=rules_cfg.get('return_policy_summary') or '',
+            forbidden_claims=rules_cfg.get('forbidden_claims') or [],
+            forbidden_promises=rules_cfg.get('forbidden_promises') or [],
         )
+        # Build a unified agent_preferences dict from the sales_agent block
+        agent_preferences = {
+            'enabled': sa.get('enabled', True),
+            'handoff_mode': sa.get('handoff_mode') or 'balanceado',
+            'followup_mode': sa.get('followup_mode') or 'suave',
+            'max_followups': sa.get('max_followups') or 3,
+            'recommendation_depth': sa.get('recommendation_depth') or 3,
+            'max_response_length': sa.get('max_response_length') or 'standard',
+            'model_name': sa.get('model_name') or 'gpt-4.1-nano',
+            'autonomy_level': sa.get('autonomy_level') or 'full',
+        }
         return SalesContext(
-            agent_name=settings.get('sales_agent_name', 'Sales Agent') or 'Sales Agent',
+            agent_name=sa.get('name') or 'Sales Agent',
             business=business,
             brand=brand,
             playbook=playbook,
@@ -670,8 +684,8 @@ def _load_sales_context(organization) -> SalesContext:
             catalog_snapshot=_load_catalog_snapshot(organization),
             knowledge_snapshot=_load_knowledge_snapshot(organization),
             buyer_model=buyer_model_cfg,
-            activation_checklist=settings.get('activation_checklist', {}) or {},
-            agent_preferences=sales_agent_preferences,
+            activation_checklist={},
+            agent_preferences=agent_preferences,
         )
     except Exception as exc:
         logger.warning('sales_agent_context_load_error', error=str(exc))
