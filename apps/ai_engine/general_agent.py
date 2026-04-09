@@ -46,7 +46,7 @@ class GeneralAgentResult:
 
 
 class GeneralAgent:
-    def run(self, *, message_text: str, conversation, organization, router_decision=None) -> GeneralAgentResult:
+    def run(self, *, message_text: str, conversation, organization, router_decision=None, **kwargs) -> GeneralAgentResult:
         general_ctx = _load_general_context(organization)
         cleaned = (message_text or '').strip()
         if not cleaned:
@@ -64,7 +64,7 @@ class GeneralAgent:
                 context_used={'knowledge_found': len(general_ctx.knowledge_snippets)},
             )
 
-        reply = _generate_reply(cleaned, general_ctx, router_decision=router_decision)
+        reply = _generate_reply(cleaned, general_ctx, router_decision=router_decision, conversation=conversation)
         return GeneralAgentResult(
             reply_text=reply,
             intent='general_help',
@@ -232,7 +232,7 @@ def _out_of_scope_reply(ctx: GeneralAgentContext) -> str:
     return f'Puedo ayudarte solo con {offer}. Si quieres, cuéntame qué necesitas dentro de ese contexto.'
 
 
-def _generate_reply(message_text: str, ctx: GeneralAgentContext, router_decision=None) -> str:
+def _generate_reply(message_text: str, ctx: GeneralAgentContext, router_decision=None, conversation=None) -> str:
     knowledge_context = '\n'.join(ctx.knowledge_snippets[:3])
     prompt = (
         f'Eres {ctx.agent_name}, el asistente general de {ctx.organization_name}. '
@@ -254,10 +254,12 @@ def _generate_reply(message_text: str, ctx: GeneralAgentContext, router_decision
             import openai
 
             client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+            chat_history = _build_chat_history_messages(conversation)
             completion = client.chat.completions.create(
                 model=(router_decision.model_name if router_decision and router_decision.model_name else ctx.model_name),
                 messages=[
                     {'role': 'system', 'content': prompt},
+                    *chat_history,
                     {'role': 'user', 'content': message_text},
                 ],
                 max_tokens=220 if ctx.max_response_length == 'brief' else 320,
@@ -270,6 +272,27 @@ def _generate_reply(message_text: str, ctx: GeneralAgentContext, router_decision
             logger.warning('general_agent_llm_error', error=str(exc))
 
     return _heuristic_reply(message_text, ctx)
+
+
+def _build_chat_history_messages(conversation) -> list[dict]:
+    """
+    Build conversation history as real OpenAI message turns.
+    Excludes the current (most recent) user message — it is added separately.
+    """
+    if not conversation:
+        return []
+    try:
+        all_msgs = list(conversation.messages.order_by('-timestamp')[:7])
+        prior = list(reversed(all_msgs[1:]))
+        result = []
+        for msg in prior:
+            role = 'user' if msg.role == 'user' else 'assistant'
+            content = ' '.join((msg.content or '').split()).strip()
+            if content:
+                result.append({'role': role, 'content': content[:500]})
+        return result
+    except Exception:
+        return []
 
 
 def _heuristic_reply(message_text: str, ctx: GeneralAgentContext) -> str:

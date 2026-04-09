@@ -310,7 +310,7 @@ class SalesAgentFollowupTaskTests(SimpleTestCase):
         _, kwargs = mock_create.call_args
         self.assertEqual(kwargs['task_type'], 'sales_followup')
         self.assertEqual(kwargs['input_data']['cadence'], 'soft')
-        self.assertEqual(kwargs['input_data']['max_attempts'], 2)
+        self.assertEqual(kwargs['input_data']['max_attempts'], 3)
 
 
 class SalesAgentHumanizationTests(SimpleTestCase):

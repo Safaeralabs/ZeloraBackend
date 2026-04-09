@@ -47,15 +47,15 @@ def _active_ai_agent(conversation) -> str | None:
 
 def _load_agent_capabilities(organization) -> dict:
     from apps.channels_config.models import ChannelConfig
+    from apps.channels_config.settings_schema import normalise_settings
 
     config = ChannelConfig.objects.filter(organization=organization, channel='onboarding').first()
-    settings_payload = (config.settings if config else {}) or {}
-    ai_preferences = settings_payload.get('ai_preferences') or {}
-    general_preferences = ai_preferences.get('general_agent') or {}
-    sales_preferences = ai_preferences.get('sales_agent') or {}
-    is_trial = bool(general_preferences.get('trial_mode', organization.plan == 'pilot'))
-    general_enabled = bool(general_preferences.get('enabled', True))
-    sales_enabled = bool(sales_preferences.get('enabled', not is_trial)) and not is_trial
+    s = normalise_settings((config.settings if config else {}) or {})
+    ga = s['general_agent']
+    sa = s['sales_agent']
+    is_trial = organization.plan == 'pilot'
+    general_enabled = bool(ga.get('enabled', True))
+    sales_enabled = bool(sa.get('enabled', True)) and not is_trial
     return {
         'trial_mode': is_trial,
         'general_enabled': general_enabled,

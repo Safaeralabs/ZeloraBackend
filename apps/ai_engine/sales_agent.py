@@ -341,8 +341,8 @@ class SalesAgent:
             logger.warning('db_flow_engine_error', error=str(_flow_exc))
 
         # Legacy hardcoded Comfaguajira flows removed — superseded by DB-driven flows
-        buyer = _profile_buyer(text, sales_ctx.buyer_model)
         stage, confidence = _classify_stage(text, sales_ctx.buyer_model)
+        buyer = _profile_buyer(text, sales_ctx.buyer_model, stage=stage)
         close_signals = _detect_close_signals(text)
         handoff = _check_handoff(text, buyer, sales_ctx.business, sales_ctx.playbook)
 
@@ -464,7 +464,7 @@ def _infer_objection_reason(text: str) -> str | None:
         return None
 
 
-def _profile_buyer(text: str, buyer_model: dict[str, Any] | None = None) -> BuyerProfile:
+def _profile_buyer(text: str, buyer_model: dict[str, Any] | None = None, stage: str = STAGE_DISCOVERING) -> BuyerProfile:
     priority = 'unknown'
     if any(token in text for token in ('barato', 'economico', 'precio bajo', 'mas barato', 'descuento')):
         priority = 'price'
@@ -504,7 +504,8 @@ def _profile_buyer(text: str, buyer_model: dict[str, Any] | None = None) -> Buye
             if isinstance(item, str) and item.strip() and item.lower() in text:
                 objection = item.strip().lower()
                 break
-    if objection is None:
+    # Only call LLM for objection classification in stages where objections matter
+    if objection is None and stage in (STAGE_CONSIDERING, STAGE_CHECKOUT_BLOCKED, STAGE_FOLLOW_UP_NEEDED):
         objection = _infer_objection_reason(text)
 
     style = 'exploratory'
@@ -1659,41 +1660,12 @@ def _parse_affiliation_status(text: str) -> str | None:
     return None
 
 
-def _parse_affiliate_category(text: str) -> str | None:
-    if any(token in text for token in ('categoria a', 'categoría a', 'cat a', 'soy a')):
-        if 'categoria b' not in text and 'categoria c' not in text:
-            return 'A'
-    if any(token in text for token in ('categoria b', 'categoría b', 'cat b', 'soy b')):
-        return 'B'
-    if any(token in text for token in ('categoria c', 'categoría c', 'cat c', 'soy c')):
-        return 'C'
-    if any(token in text for token in ('no se', 'no sé', 'no la se', 'no la sé', 'no recuerdo')):
-        return 'desconocida'
-    return None
-
-
 def _qualification_completion_reply(parsed_status: str) -> str:
     if parsed_status == 'empresa_afiliada':
         return 'Perfecto. Tomo que es para empresa afiliada. En algunos servicios toca validar que la empresa este al dia en aportes, pero ya te puedo orientar mejor. Que servicio necesitas?'
     if parsed_status == 'particular':
         return 'Perfecto. Tomo que es para particular. Te ayudo con el servicio y te aclaro desde ya cuando una tarifa subsidiada aplica solo para afiliados. Que servicio necesitas?'
     return 'Perfecto. Si no tienes clara tu afiliacion o categoria, te orientare con la regla general y te dire cuando haga falta validarla. Que servicio necesitas?'
-
-
-def _persist_conversation_flow_state(conversation, metadata: dict[str, Any], active_flow: dict[str, Any], qualification: dict[str, Any]) -> None:
-    metadata = {**metadata}
-    metadata['active_flow'] = active_flow
-    metadata['qualification'] = qualification
-    conversation.metadata = metadata
-    conversation.save(update_fields=['metadata', 'updated_at'])
-
-    contact = getattr(conversation, 'contact', None)
-    if contact:
-        contact.metadata = {
-            **(contact.metadata or {}),
-            'qualification': qualification,
-        }
-        contact.save(update_fields=['metadata', 'updated_at'])
 
 
 def _parse_affiliate_category(text: str) -> str | None:
@@ -2729,6 +2701,7 @@ def _create_followup_task(conversation, organization, stage: str, message_text: 
 
         from apps.ai_engine.models import AITask
         from apps.channels_config.models import ChannelConfig
+        from apps.channels_config.settings_schema import normalise_settings
 
         if conversation is None:
             return
@@ -2738,15 +2711,17 @@ def _create_followup_task(conversation, organization, stage: str, message_text: 
         if _has_real_identifier(org_id):
             config = ChannelConfig.objects.filter(organization=organization, channel='onboarding').only('settings').first()
             settings = (config.settings if config else {}) or {}
-        sales_prefs = ((settings.get('ai_preferences') or {}).get('sales_agent') or {})
-        followup_mode = sales_prefs.get('followup_mode', 'suave')
+
+        s = normalise_settings(settings)
+        sa = s['sales_agent']
+        followup_mode = sa.get('followup_mode', 'suave')
         normalized_followup_mode = {
             'suave': 'soft',
             'soft': 'soft',
             'agresivo': 'aggressive',
             'aggressive': 'aggressive',
         }.get(str(followup_mode).lower(), 'soft')
-        max_attempts = int(sales_prefs.get('max_followups', 2) or 2)
+        max_attempts = int(sa.get('max_followups', 3) or 3)
         if followup_mode == 'apagado' or max_attempts <= 0:
             return
 
