@@ -719,68 +719,84 @@ def _build_actions(
 
 def _load_catalog_snapshot(organization) -> list[dict[str, Any]]:
     try:
-        from django.db import connection
-
         from apps.ecommerce.models import Product, ProductVariant
-
-        with connection.cursor() as cursor:
-            product_columns = {row[1] for row in cursor.execute('PRAGMA table_info(products)').fetchall()}
-            variant_columns = {row[1] for row in cursor.execute('PRAGMA table_info(product_variants)').fetchall()}
-
-        product_fields = [
-            field
-            for field in ['id', 'title', 'brand', 'description', 'category', 'status', 'tags', 'is_active']
-            if field in product_columns
-        ]
-        variant_fields = [
-            field
-            for field in ['id', 'product_id', 'sku', 'name', 'price', 'stock', 'reserved']
-            if field in variant_columns
-        ]
 
         products = list(
             Product.objects.filter(
                 organization=organization,
                 is_active=True,
                 status='active',
-            ).order_by('title').values(*product_fields)[:8]
+            ).order_by('category', 'title').values(
+                'id', 'title', 'brand', 'description', 'category',
+                'offer_type', 'price_type', 'service_mode',
+                'requires_booking', 'requires_shipping',
+                'service_duration_minutes', 'capacity',
+                'fulfillment_notes', 'tags',
+            )[:60]
         )
         product_ids = [item['id'] for item in products if item.get('id')]
         variants_by_product: dict[Any, list[dict[str, Any]]] = {}
         if product_ids:
-            variants = ProductVariant.objects.filter(product_id__in=product_ids).values(*variant_fields)
+            variants = ProductVariant.objects.filter(product_id__in=product_ids).values(
+                'product_id', 'sku', 'name', 'price',
+                'stock', 'reserved', 'duration_minutes', 'capacity', 'metadata',
+            )
             for variant in variants:
                 variants_by_product.setdefault(variant.get('product_id'), []).append(variant)
 
         snapshot: list[dict[str, Any]] = []
         for product in products:
+            offer_type = product.get('offer_type') or 'physical'
+            is_service = offer_type == 'service'
+
             variant_data = []
-            for variant in variants_by_product.get(product.get('id'), [])[:4]:
+            for variant in variants_by_product.get(product.get('id'), []):
                 price = float(variant.get('price') or 0)
-                available = max(0, int(variant.get('stock') or 0) - int(variant.get('reserved') or 0))
-                variant_data.append({
+                stock = int(variant.get('stock') or 0)
+                reserved = int(variant.get('reserved') or 0)
+                available = max(0, stock - reserved)
+                # Services don't deplete stock — treat as available unless stock is
+                # explicitly set to a finite negative value by the operator.
+                in_stock = True if is_service else available > 0
+                v: dict[str, Any] = {
                     'name': variant.get('name', ''),
                     'sku': variant.get('sku', ''),
                     'price': price,
-                    'available': available,
-                    'in_stock': available > 0,
-                })
+                    'in_stock': in_stock,
+                }
+                if not is_service:
+                    v['available'] = available
+                if variant.get('duration_minutes'):
+                    v['duration_minutes'] = variant['duration_minutes']
+                if variant.get('metadata'):
+                    v['metadata'] = variant['metadata']
+                variant_data.append(v)
 
-            prices = [item['price'] for item in variant_data if item['price'] > 0]
-            snapshot.append({
+            prices = [v['price'] for v in variant_data if v['price'] > 0]
+            entry: dict[str, Any] = {
                 'title': product.get('title', ''),
-                'brand': product.get('brand', ''),
-                'category': product.get('category', ''),
+                'brand': product.get('brand') or '',
+                'category': product.get('category') or '',
                 'description': ' '.join((product.get('description') or '').split())[:220],
-                'offer_type': 'physical',
-                'price_type': 'fixed',
-                'requires_shipping': True,
-                'requires_booking': False,
-                'min_price': min(prices) if prices else None,
-                'any_in_stock': any(item['in_stock'] for item in variant_data),
+                'offer_type': offer_type,
+                'price_type': product.get('price_type') or 'fixed',
+                'service_mode': product.get('service_mode') or 'not_applicable',
+                'requires_shipping': bool(product.get('requires_shipping')),
+                'requires_booking': bool(product.get('requires_booking')),
+                'any_in_stock': True if is_service else any(v['in_stock'] for v in variant_data),
                 'variants': variant_data,
                 'tags': product.get('tags') or [],
-            })
+            }
+            if prices:
+                entry['min_price'] = min(prices)
+                entry['max_price'] = max(prices)
+            if product.get('service_duration_minutes'):
+                entry['service_duration_minutes'] = product['service_duration_minutes']
+            if product.get('capacity'):
+                entry['capacity'] = product['capacity']
+            if product.get('fulfillment_notes'):
+                entry['fulfillment_notes'] = ' '.join(product['fulfillment_notes'].split())[:160]
+            snapshot.append(entry)
         return snapshot
     except Exception as exc:
         logger.warning('sales_agent_catalog_snapshot_error', error=str(exc))
@@ -796,7 +812,7 @@ def _load_knowledge_snapshot(organization) -> list[dict[str, Any]]:
             organization=organization,
             is_active=True,
             status='published',
-        ).order_by('-updated_at')[:6]
+        ).order_by('purpose', 'category', 'title')[:20]
         for article in articles:
             items.append({
                 'type': 'article',
@@ -1769,12 +1785,12 @@ def _build_scope_terms(sales_ctx: SalesContext) -> set[str]:
         for chunk in re.split(r'[^a-z0-9áéíóúñ]+', (raw or '').lower())
         if len(chunk.strip()) >= 4
     }
-    for product in sales_ctx.catalog_snapshot[:8]:
+    for product in sales_ctx.catalog_snapshot:
         for raw in (product.get('title', ''), product.get('brand', ''), product.get('category', '')):
             for chunk in re.split(r'[^a-z0-9áéíóúñ]+', (raw or '').lower()):
                 if len(chunk.strip()) >= 4:
                     allowed_terms.add(chunk.strip())
-    for item in sales_ctx.knowledge_snapshot[:8]:
+    for item in sales_ctx.knowledge_snapshot[:12]:
         for raw in (item.get('title', ''), item.get('category', '')):
             for chunk in re.split(r'[^a-z0-9áéíóúñ]+', (raw or '').lower()):
                 if len(chunk.strip()) >= 4:
@@ -2278,9 +2294,13 @@ def _build_context_block(
     if products:
         product_lines = []
         for product in products[:4]:
-            stock_label = 'en stock' if product.get('any_in_stock') else 'sin stock'
-            price_label = f'${product["min_price"]:,.0f}' if product.get('min_price') else 'precio a consultar'
-            product_lines.append(f'- {product["title"]} | {price_label} | {stock_label}')
+            is_svc = product.get('offer_type') == 'service'
+            avail_label = 'disponible' if product.get('any_in_stock') else ('sin_stock' if not is_svc else 'no_disponible')
+            price_label = f'${product["min_price"]:,.0f}' if product.get('min_price') else ('cotizar' if product.get('price_type') == 'quote_required' else 'precio a consultar')
+            meta = product.get('offer_type', 'physical')
+            if is_svc and product.get('requires_booking'):
+                meta += '|requiere_reserva'
+            product_lines.append(f'- {product["title"]} | {price_label} | {avail_label} | {meta}')
     promotion_lines = '\n'.join(f'- {promo}' for promo in promotions[:2]) if promotions else 'Sin promociones activas.'
     stock_line = f'Stock validado: {stock_info.get("total_available")}' if stock_info else 'Stock no consultado.'
     return (
@@ -2334,11 +2354,33 @@ def _build_catalog_snapshot_block(catalog_snapshot: list[dict[str, Any]]) -> str
         return 'Sin catalogo activo disponible.'
 
     lines: list[str] = []
-    for item in catalog_snapshot[:6]:
-        price = f'${item["min_price"]:,.0f}' if item.get('min_price') else 'precio a consultar'
+    for item in catalog_snapshot:
+        price_parts: list[str] = []
+        if item.get('min_price'):
+            if item.get('max_price') and item['max_price'] != item['min_price']:
+                price_parts.append(f'${item["min_price"]:,.0f}–${item["max_price"]:,.0f}')
+            else:
+                price_parts.append(f'${item["min_price"]:,.0f}')
+        elif item.get('price_type') == 'quote_required':
+            price_parts.append('cotizar')
+        else:
+            price_parts.append('precio a consultar')
+        price = price_parts[0]
         stock = 'disponible' if item.get('any_in_stock') else 'sin stock'
         category = item.get('category') or 'sin categoria'
-        lines.append(f'- {item["title"]} | {category} | {price} | {stock}')
+        offer_type = item.get('offer_type', 'physical')
+        meta_parts: list[str] = [offer_type]
+        if offer_type == 'service':
+            if item.get('requires_booking'):
+                meta_parts.append('requiere_reserva')
+            svc_mode = item.get('service_mode', 'not_applicable')
+            if svc_mode not in ('not_applicable', ''):
+                meta_parts.append(svc_mode)
+        elif offer_type == 'physical':
+            if item.get('requires_shipping'):
+                meta_parts.append('con_envio')
+        meta = '|'.join(meta_parts)
+        lines.append(f'- {item["title"]} | {category} | {price} | {stock} | {meta}')
     return '\n'.join(lines)
 
 
@@ -2347,7 +2389,7 @@ def _build_knowledge_snapshot_block(knowledge_snapshot: list[dict[str, Any]]) ->
         return 'Sin knowledge base publicada.'
 
     lines: list[str] = []
-    for item in knowledge_snapshot[:8]:
+    for item in knowledge_snapshot:
         item_type = item.get('type', 'item')
         category = item.get('category') or 'general'
         content = item.get('content', '')
