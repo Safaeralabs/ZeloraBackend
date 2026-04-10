@@ -209,15 +209,10 @@ class ConversationViewSet(OrgScopedMixin, viewsets.ModelViewSet):
             metadata={'reason': operator_state.get('escalation_reason', '')},
         )
         logger.info('conversation_escalated', conversation_id=str(conv.id))
-        # Async: extract learnings before handing off to human (background thread to avoid blocking).
+        # Async: extract learnings before handing off to human (use Celery for reliability).
         try:
-            import threading
-            from apps.ai_engine.tasks import run_learning_engine
-            threading.Thread(
-                target=run_learning_engine,
-                args=(str(conv.id),),
-                daemon=True,
-            ).start()
+            from apps.ai_engine.tasks import extract_conversation_learnings
+            extract_conversation_learnings.delay(str(conv.id))
         except Exception:
             logger.warning('learning_engine_task_queue_failed', conversation_id=str(conv.id))
         return Response({'status': 'escalated'})
@@ -241,16 +236,10 @@ class ConversationViewSet(OrgScopedMixin, viewsets.ModelViewSet):
             calculate_qa_score.delay(str(conv.id))
         except Exception:
             logger.warning('qa_score_task_queue_failed', conversation_id=str(conv.id))
-        # Async: extract conversation learnings for the AI Learning Engine.
-        # Use a background thread so eager-mode Celery doesn't block the HTTP response.
+        # Async: extract conversation learnings for the AI Learning Engine (use Celery for reliability).
         try:
-            import threading
-            from apps.ai_engine.tasks import run_learning_engine
-            threading.Thread(
-                target=run_learning_engine,
-                args=(str(conv.id),),
-                daemon=True,
-            ).start()
+            from apps.ai_engine.tasks import extract_conversation_learnings
+            extract_conversation_learnings.delay(str(conv.id))
         except Exception:
             logger.warning('learning_engine_task_queue_failed', conversation_id=str(conv.id))
         return Response({'status': 'resolved'})

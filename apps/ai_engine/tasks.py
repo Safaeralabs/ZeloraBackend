@@ -258,6 +258,105 @@ def _fingerprint_llm(title: str) -> str:
     return hashlib.sha256(f'llm|{normalized}'.encode()).hexdigest()
 
 
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _should_learn_from(conversation, messages: list[dict]) -> tuple[bool, str | None]:
+    """
+    L1 — Pre-filter: decide if this conversation is worth learning from.
+    Returns (should_learn, skip_reason).
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+    from apps.conversations.models import QAScore
+
+    # Rule 1: Minimum message count
+    if len(messages) < 4:
+        return False, 'too_few_messages'
+
+    # Rule 2: Resolution must have human or mixed involvement, not pure IA
+    source_meta = _learning_source_metadata(messages)
+    if source_meta['source_role'] == 'user':
+        # Only user spoke, no response
+        return False, 'no_resolution_messages'
+
+    conversation_meta = _conversation_learning_metadata(conversation, messages)
+    if conversation_meta['resolution_source'] == 'ia':
+        # Pure IA → lower priority, skip for now
+        return False, 'pure_ai_resolution'
+
+    # Rule 3: QA Score >= 65 if exists
+    try:
+        qa_score = QAScore.objects.get(conversation=conversation)
+        if qa_score.score < 65:
+            return False, 'low_qa_score'
+    except QAScore.DoesNotExist:
+        pass  # OK, QA score might not exist yet
+
+    # Rule 4: Conversation is recent (not older than 30 days)
+    if conversation.last_message_at:
+        age_hours = (timezone.now() - conversation.last_message_at).total_seconds() / 3600
+        if age_hours > 720:  # 30 days
+            return False, 'conversation_too_old'
+
+    # Rule 5: Simple prompt injection detector — check for obvious attack patterns
+    suspicious_patterns = [
+        'ignore', 'forget', 'override', 'instructions', 'system prompt',
+        'debug', 'test', 'eval', 'exec', '__',
+    ]
+    all_text = ' '.join(m.get('content', '') for m in messages).lower()
+    if any(pattern in all_text for pattern in suspicious_patterns):
+        # Could be prompt injection; flag it
+        logger.warning('suspected_prompt_injection', conversation_id=str(conversation.id))
+        return False, 'suspected_prompt_injection'
+
+    return True, None
+
+
+def _dedupe_semantic(
+    candidate_dict: dict, org_id: str, existing_candidates: list
+) -> tuple[bool, str | None]:
+    """
+    L2 — Semantic deduplication.
+    Given a new candidate (with embedding), check if it's too similar to existing ones.
+    Returns (should_create, candidate_to_update_id).
+    """
+    new_embedding = candidate_dict.get('embedding')
+    if not new_embedding:
+        # No embedding, fall back to fingerprint-only dedupe (already done by get_or_create)
+        return True, None
+
+    new_title = candidate_dict.get('title', '')
+
+    for existing in existing_candidates:
+        existing_embedding = existing.get('metadata', {}).get('embedding')
+        if not existing_embedding:
+            continue
+
+        similarity = _cosine_similarity(new_embedding, existing_embedding)
+        if similarity > 0.88:
+            # Too similar — update existing instead of creating new
+            logger.info(
+                'dedupe_semantic_hit',
+                org_id=org_id,
+                new_title=new_title,
+                existing_title=existing.get('title'),
+                similarity=similarity,
+            )
+            return False, existing.get('id')
+
+    return True, None
+
+
 def run_learning_engine(conversation_id: str) -> dict:
     """
     Core logic — importable synchronously or called from the Celery task.
@@ -265,6 +364,9 @@ def run_learning_engine(conversation_id: str) -> dict:
     Extracts learnings via gpt-4o-mini and creates LearningCandidate entries
     (status='pending') for human review. Pre-generates embeddings so they are
     transferred to KBArticle at approval time without an extra API call.
+
+    L1 — Pre-filters low-quality conversations before extraction.
+    L2 — Deduplicates semantically similar candidates.
     """
     import hashlib
 
@@ -294,6 +396,19 @@ def run_learning_engine(conversation_id: str) -> dict:
     if not messages:
         return {'status': 'skipped', 'reason': 'no_messages'}
 
+    # ── L1: Pre-filter low-quality conversations ────────────────────────────────
+    should_learn, skip_reason = _should_learn_from(conversation, messages)
+    if not should_learn:
+        # Mark conversation with skip reason for audit
+        try:
+            meta = {**(conversation.metadata or {})}
+            meta['learning_skipped_reason'] = skip_reason
+            Conversation.objects.filter(id=conversation_id).update(metadata=meta)
+        except Exception:
+            pass
+        logger.info('learning_engine_skipped', conversation_id=str(conversation_id), reason=skip_reason)
+        return {'status': 'skipped', 'reason': skip_reason}
+
     org_id_str = str(org.id)
     conversation_text = _build_conversation_summary(messages)
     source_meta = _learning_source_metadata(messages)
@@ -302,6 +417,14 @@ def run_learning_engine(conversation_id: str) -> dict:
 
     created = 0
     updated = 0
+    deduped = 0
+
+    # ── L2: Pre-load existing candidates for semantic deduplication ──────────────
+    existing_candidates_qs = LearningCandidate.objects.filter(
+        organization=org, kind='faq', status__in=['pending', 'approved']
+    ).values('id', 'title', 'metadata')
+    existing_candidates = list(existing_candidates_qs)
+
     for item in learnings:
         if not isinstance(item, dict):
             continue
@@ -319,6 +442,36 @@ def run_learning_engine(conversation_id: str) -> dict:
         embedding = _generate_embedding(f'{title}\n{content}', org_id_str)
 
         base_confidence = 0.84 if conversation_meta['resolution_source'] == 'humano' else 0.78
+
+        # ── L2: Check for semantic duplicates ──────────────────────────────────
+        candidate_dict = {
+            'title': title,
+            'embedding': embedding,
+        }
+        should_create, existing_id_to_update = _dedupe_semantic(
+            candidate_dict, org_id_str, existing_candidates
+        )
+
+        if not should_create and existing_id_to_update:
+            # Found a semantic duplicate; update the existing candidate
+            try:
+                candidate = LearningCandidate.objects.get(id=existing_id_to_update)
+                # Bump confidence and evidence count
+                candidate.evidence_count += 1
+                candidate.confidence = min(0.97, round(base_confidence + candidate.evidence_count * 0.04, 2))
+                meta = {**(candidate.metadata or {})}
+                meta['embedding'] = embedding  # Use newer embedding
+                meta['tags'] = tags
+                meta.update(source_meta)
+                meta.update(conversation_meta)
+                candidate.metadata = meta
+                candidate.save(update_fields=['evidence_count', 'confidence', 'metadata', 'updated_at'])
+                deduped += 1
+            except LearningCandidate.DoesNotExist:
+                pass
+            continue
+
+        # Normal get_or_create path (fingerprint-based)
         candidate, was_created = LearningCandidate.objects.get_or_create(
             organization=org,
             kind='faq',
@@ -405,6 +558,7 @@ def run_learning_engine(conversation_id: str) -> dict:
         learnings_extracted=len(learnings),
         candidates_created=created,
         candidates_updated=updated,
+        candidates_deduped=deduped,
         style_patterns_created=style_created,
     )
     # Mark conversation as processed so the sweep task skips it
@@ -416,7 +570,7 @@ def run_learning_engine(conversation_id: str) -> dict:
     except Exception:
         pass
 
-    return {'status': 'ok', 'extracted': len(learnings), 'created': created, 'updated': updated}  # noqa: RET504
+    return {'status': 'ok', 'extracted': len(learnings), 'created': created, 'updated': updated, 'deduped': deduped}  # noqa: RET504
 
 
 def synthesize_playbook_from_kb(org_id: str) -> dict:
