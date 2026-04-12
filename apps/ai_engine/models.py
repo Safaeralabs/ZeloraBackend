@@ -165,6 +165,10 @@ class SalesAgentLog(models.Model):
     products_shown = models.JSONField(default=list)
     recommended_actions = models.JSONField(default=list)
     context_used = models.JSONField(default=dict)
+    # P2.4: Evaluation and channel tracking
+    evaluation_score = models.FloatField(null=True, blank=True)  # 0-1, from evaluator
+    evaluation_flags = models.JSONField(default=list, blank=True)  # list of flags from evaluator
+    channel = models.CharField(max_length=30, blank=True)  # whatsapp, web, instagram, email, telegram
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
