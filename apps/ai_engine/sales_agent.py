@@ -38,8 +38,6 @@ from .sales_models import (
 )
 from .sales_context import _load_sales_context, _create_followup_task, _extract_kb_policy_overrides
 from .sales_scope import (
-    _guard_general_scope_request,
-    _guard_out_of_scope_request,
     _enforce_reply_scope,
     _strengthen_closing_reply,
 )
@@ -48,10 +46,6 @@ from .sales_reply import (
     _apply_brand_voice,
     _build_context_block,
     _build_system_prompt,
-    _heuristic_reply,
-    _humanize_sales_reply,
-    _guard_out_of_scope_brand_query,
-    _avoid_consecutive_repeat,
 )
 from .sales_kb import _lookup_relevant_knowledge
 
@@ -77,23 +71,6 @@ class SalesAgent:
                 recommended_actions=[SalesAction('escalate_to_human', {'reason': 'sales_agent_disabled'})],
                 reply_text='Te paso con un asesor humano para continuar desde aqui.',
                 handoff=HandoffDecision(needed=True, reason='sales_agent_disabled'),
-            )
-        out_of_scope = _guard_general_scope_request(message_text, sales_ctx)
-        if out_of_scope:
-            return SalesAgentResult(
-                stage=STAGE_DISCOVERING,
-                confidence=0.96,
-                decision=DECISION_DISCARD,
-                recommended_actions=[],
-                reply_text=out_of_scope['reply'],
-                handoff=HandoffDecision(needed=False),
-                buyer_profile=BuyerProfile(),
-                context_used={
-                    'out_of_scope': True,
-                    'out_of_scope_kind': out_of_scope['kind'],
-                    'out_of_scope_reason': out_of_scope['reason'],
-                    'brand_scope_enforced': True,
-                },
             )
         # ── DB-driven flows (any organization) ────────────────────────────────
         try:

@@ -236,7 +236,11 @@ def _heuristic_reply(
         reply = _reply_follow_up_needed(buyer, products, promotions)
         return _apply_brand_voice(reply, brand_ctx, playbook, stage)
     if stage == STAGE_DISCOVERING:
-        reply = _reply_discovering(buyer, products, product_lines)
+        reply = _reply_discovering(
+            buyer, products, product_lines,
+            catalog_snapshot=sales_ctx.catalog_snapshot,
+            org_slug=biz_ctx.org_slug,
+        )
         return _apply_brand_voice(reply, brand_ctx, playbook, stage)
     return _apply_brand_voice('Cuantame que necesitas y te ayudo a decidir la mejor opcion para comprar.', brand_ctx, playbook, stage)
 
@@ -319,12 +323,23 @@ def _reply_follow_up_needed(
     )
 
 
-def _reply_discovering(buyer: BuyerProfile, products: list[dict[str, Any]], product_lines: str) -> str:
+def _reply_discovering(
+    buyer: BuyerProfile,
+    products: list[dict[str, Any]],
+    product_lines: str,
+    catalog_snapshot: list[dict[str, Any]] | None = None,
+    org_slug: str = '',
+) -> str:
     if buyer.style == 'direct' and products:
         return f'Encontre estas opciones:{product_lines} Si quieres, te digo cual te conviene mas segun lo que buscas.'
     if products:
         return f'Tenemos estas opciones disponibles:{product_lines} Es para ti, para regalo o para algo puntual?'
-    return 'Hola, que andas buscando? Si me dices para que lo quieres, te recomiendo algo concreto.'
+    # No search match — show top catalog items so the client can browse
+    if catalog_snapshot:
+        snapshot_lines = _build_product_lines(catalog_snapshot[:3], org_slug)
+        if snapshot_lines:
+            return f'Esto es lo que tenemos disponible:{snapshot_lines} Dime si algo te llama la atencion o en que te puedo ayudar.'
+    return 'Que andas buscando? Si me dices para que lo necesitas, te recomiendo algo concreto.'
 
 
 def _avoid_consecutive_repeat(
@@ -341,18 +356,24 @@ def _avoid_consecutive_repeat(
         return reply
 
     try:
-        recent_messages = list(conversation.messages.order_by('-timestamp')[:4])
+        recent_messages = list(conversation.messages.order_by('-timestamp')[:6])
     except Exception:
         return reply
 
-    last_bot = next((item for item in recent_messages if getattr(item, 'role', '') == 'bot' and getattr(item, 'content', '')), None)
-    last_user = next((item for item in recent_messages if getattr(item, 'role', '') == 'user' and getattr(item, 'content', '')), None)
-    last_bot_text = ' '.join((getattr(last_bot, 'content', '') or '').split()).strip().lower()
+    bot_messages = [
+        ' '.join((getattr(m, 'content', '') or '').split()).strip().lower()
+        for m in recent_messages
+        if getattr(m, 'role', '') == 'bot' and getattr(m, 'content', '')
+    ]
+    last_bot_text = bot_messages[0] if bot_messages else ''
     current_user_text = ' '.join((message_text or '').split()).strip().lower()
-    last_user_text = ' '.join((getattr(last_user, 'content', '') or '').split()).strip().lower()
 
     if normalized_reply != last_bot_text:
         return reply
+
+    # The proposed reply is identical to the last bot message — must diverge.
+    # Check how many recent bot messages match to pick the right fallback level.
+    repeat_count = sum(1 for t in bot_messages[:3] if t == normalized_reply)
 
     if current_user_text in {'es para mi', 'para mi', 'es mío', 'es mio'} and products:
         first = products[0]
@@ -361,20 +382,23 @@ def _avoid_consecutive_repeat(
             'Te va mejor que te guie por set, talla o color?'
         )
 
-    if current_user_text and current_user_text == last_user_text:
-        if products:
-            first = products[0]
-            return (
-                f'Te sigo por aqui sin repetir todo: si quieres, arrancamos por {first["title"]}. '
-                'Dime que quieres definir primero y te respondo puntual.'
-            )
-        return 'Te sigo por aqui. Dime que quieres definir primero y te respondo puntual.'
-
-    if stage == STAGE_DISCOVERING and products:
+    if products:
         first = products[0]
-        return f'Perfecto. Si quieres, arrancamos por {first["title"]}. Dime si te importa mas talla, color o precio.'
+        if repeat_count >= 2:
+            # Third+ repeat: switch angle entirely
+            return (
+                f'Arranquemos por {first["title"]}. '
+                'Te lo recomiendo, cuento sus puntos fuertes, o prefieres que te muestre algo diferente?'
+            )
+        return (
+            f'Para no darte vueltas: {first["title"]} es la opcion que mas encaja segun lo que dijiste. '
+            'Hay algo puntual que quieras resolver antes de decidir?'
+        )
 
-    return reply
+    # No products — escalate to open-ended invitation instead of the same question
+    if repeat_count >= 2:
+        return 'Dime con una sola palabra que describes lo que buscas y arrancamos desde ahi.'
+    return 'Cuantame un poco mas: es para uso personal, para regalo, o algo de trabajo? Con eso te oriento mejor.'
 
 
 def _product_link(product: dict[str, Any], org_slug: str) -> str:
@@ -1256,11 +1280,6 @@ def _generate_reply(
     """
     try:
         from django.conf import settings as django_settings
-
-        # Guard: out-of-scope brand query check
-        out_of_scope_reply = _guard_out_of_scope_brand_query(message_text, sales_ctx)
-        if out_of_scope_reply:
-            return out_of_scope_reply
 
         # Guard: never invent products when the organization has no active catalog.
         has_catalog_snapshot = bool(sales_ctx.catalog_snapshot)
