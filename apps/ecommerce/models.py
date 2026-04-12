@@ -42,12 +42,30 @@ class Product(models.Model):
     images = models.JSONField(default=list, blank=True)
     tags = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
+
+    # P1.1: Enriched product attributes for recommendation engine & storytelling
+    subcategory = models.CharField(max_length=100, blank=True)
+    occasion = models.JSONField(default=list, blank=True)  # e.g., ["wedding", "dinner", "business"]
+    style = models.CharField(max_length=100, blank=True)  # e.g., "casual", "formal", "sporty"
+    color = models.CharField(max_length=100, blank=True)  # e.g., "navy blue", "beige"
+    material = models.CharField(max_length=100, blank=True)  # e.g., "cotton", "polyester"
+    fit = models.CharField(max_length=50, blank=True)  # e.g., "slim", "regular", "oversize"
+    formality = models.CharField(max_length=50, blank=True)  # e.g., "formal", "semiformal", "casual"
+    target_audience = models.CharField(max_length=100, blank=True)  # e.g., "adult men", "young women"
+    is_bestseller = models.BooleanField(default=False)
+    popularity_score = models.FloatField(default=0.0)  # 0–100, manual or auto-computed
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'products'
         ordering = ['title']
+        indexes = [
+            models.Index(fields=['organization', 'is_bestseller']),
+            models.Index(fields=['organization', 'formality']),
+            models.Index(fields=['organization', 'is_active']),
+        ]
 
 
 class ProductVariant(models.Model):
@@ -143,3 +161,94 @@ class Order(models.Model):
     class Meta:
         db_table = 'orders'
         ordering = ['-created_at']
+
+
+class Promotion(models.Model):
+    """
+    P1.1: Promotion model — replaces ChannelConfig.settings['active_promotions'].
+    Supports org-level, category-level, and product-specific promotions with time windows.
+    """
+
+    DISCOUNT_TYPE_CHOICES = [
+        ('percentage', 'Percentage off'),
+        ('fixed_amount', 'Fixed amount off'),
+        ('free_shipping', 'Free shipping'),
+        ('bundle', 'Bundle deal'),
+    ]
+    APPLIES_TO_CHOICES = [
+        ('all_products', 'All products'),
+        ('category', 'Category'),
+        ('specific_products', 'Specific products'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        'accounts.Organization', on_delete=models.CASCADE, related_name='promotions'
+    )
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    discount_type = models.CharField(max_length=20, choices=DISCOUNT_TYPE_CHOICES)
+    discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    # Scope: which products this applies to
+    applies_to = models.CharField(max_length=30, choices=APPLIES_TO_CHOICES, default='all_products')
+    category = models.CharField(max_length=100, blank=True)  # if applies_to='category'
+    products = models.ManyToManyField(Product, blank=True, related_name='promotions')  # if applies_to='specific_products'
+
+    # Time window
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'promotions'
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['organization', 'is_active']),
+        ]
+
+
+class ProductRelation(models.Model):
+    """
+    P1.1: Product graph — models relationships between products.
+    Supports: combines_with, avoids_with, bundle_with, cheaper_alternative, premium_alternative, similar_to.
+    """
+
+    RELATION_TYPE_CHOICES = [
+        ('combina_con', 'Combina con'),
+        ('evita_con', 'Evita con'),
+        ('bundle_con', 'Bundle con'),
+        ('alternativa_barata', 'Alternativa barata'),
+        ('alternativa_premium', 'Alternativa premium'),
+        ('similar_a', 'Similar a'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        'accounts.Organization', on_delete=models.CASCADE, related_name='product_relations'
+    )
+    source_product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='relations_as_source'
+    )
+    target_product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='relations_as_target'
+    )
+    relation_type = models.CharField(max_length=30, choices=RELATION_TYPE_CHOICES)
+    weight = models.FloatField(default=1.0)  # relevance 0–1
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'product_relations'
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['source_product', 'target_product', 'relation_type'],
+                name='uniq_product_relation',
+            )
+        ]
+        indexes = [
+            models.Index(fields=['organization', 'source_product']),
+        ]

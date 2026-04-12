@@ -32,6 +32,12 @@ def lookup_products(organization, query: str, limit: int = 5) -> list[dict]:
                     | Q(description__icontains=w)
                     | Q(category__icontains=w)
                     | Q(brand__icontains=w)
+                    | Q(subcategory__icontains=w)  # P1.1
+                    | Q(style__icontains=w)  # P1.1
+                    | Q(color__icontains=w)  # P1.1
+                    | Q(material__icontains=w)  # P1.1
+                    | Q(formality__icontains=w)  # P1.1
+                    | Q(target_audience__icontains=w)  # P1.1
                 )
             products = Product.objects.filter(
                 organization=organization, is_active=True, status='active'
@@ -79,12 +85,51 @@ def check_stock(organization, product_id: str) -> dict:
         return {'product_id': product_id, 'any_in_stock': None, 'variants': []}
 
 
-def get_active_promotions(organization) -> list[dict]:
+def get_active_promotions(organization, product=None) -> list[dict]:
     """
     Return active promotions for the organization.
-    Reads from onboarding/channel settings until a dedicated promotions model exists.
+    P1.1: Now reads from dedicated Promotion model first, with fallback to settings.
+    Optionally filters promotions applicable to a specific product.
     """
     try:
+        from apps.ecommerce.models import Promotion
+        from django.utils import timezone
+
+        now = timezone.now()
+
+        # Query from Promotion model
+        qs = Promotion.objects.filter(
+            organization=organization,
+            is_active=True,
+        ).filter(
+            Q(starts_at__isnull=True) | Q(starts_at__lte=now),
+            Q(ends_at__isnull=True) | Q(ends_at__gte=now),
+        )
+
+        # Filter by product if provided
+        if product:
+            qs = qs.filter(
+                Q(applies_to='all_products')
+                | Q(applies_to='category', category=product.category)
+                | Q(applies_to='specific_products', products=product)
+            )
+
+        promos = [
+            {
+                'id': str(p.id),
+                'title': p.title,
+                'description': p.description,
+                'discount_type': p.discount_type,
+                'discount_value': float(p.discount_value),
+                'applies_to': p.applies_to,
+            }
+            for p in qs[:5]
+        ]
+
+        if promos:
+            return promos
+
+        # Fallback to ChannelConfig settings if no Promotion model results
         from apps.channels_config.models import ChannelConfig
 
         config = ChannelConfig.objects.filter(
@@ -92,10 +137,11 @@ def get_active_promotions(organization) -> list[dict]:
             channel='onboarding',
         ).only('settings').first()
         settings = (config.settings if config else {}) or {}
-        promos = settings.get('active_promotions', [])
-        if not promos:
-            promos = (settings.get('commerce_rules') or {}).get('active_promotions', [])
-        return promos if isinstance(promos, list) else []
+        fallback_promos = settings.get('active_promotions', [])
+        if not fallback_promos:
+            fallback_promos = (settings.get('commerce_rules') or {}).get('active_promotions', [])
+        return fallback_promos if isinstance(fallback_promos, list) else []
+
     except Exception as exc:
         logger.warning('sales_tool_get_active_promotions_error', error=str(exc))
         return []
@@ -148,6 +194,7 @@ def _serialize_product(product) -> dict:
         'title': product.title,
         'brand': product.brand,
         'category': product.category,
+        'subcategory': product.subcategory,  # P1.1
         'description': product.description[:300] if product.description else '',
         'offer_type': product.offer_type,
         'price_type': product.price_type,
@@ -157,5 +204,13 @@ def _serialize_product(product) -> dict:
         'variants': variants,
         'any_in_stock': any(v['in_stock'] for v in variants),
         'tags': product.tags or [],
-        'promotion': (product.attributes or {}).get('promotion', {}),
+        'occasion': product.occasion or [],  # P1.1
+        'style': product.style,  # P1.1
+        'color': product.color,  # P1.1
+        'material': product.material,  # P1.1
+        'fit': product.fit,  # P1.1
+        'formality': product.formality,  # P1.1
+        'target_audience': product.target_audience,  # P1.1
+        'is_bestseller': product.is_bestseller,  # P1.1
+        'promotion': (product.attributes or {}).get('promotion', {}),  # Legacy fallback
     }

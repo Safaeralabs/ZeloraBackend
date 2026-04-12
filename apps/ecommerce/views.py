@@ -7,8 +7,15 @@ from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from .models import Product, Order, InventoryMovement
-from .serializers import ProductSerializer, PublicProductSerializer, OrderSerializer, InventoryMovementSerializer
+from .models import Product, Order, InventoryMovement, Promotion, ProductRelation
+from .serializers import (
+    ProductSerializer,
+    PublicProductSerializer,
+    OrderSerializer,
+    InventoryMovementSerializer,
+    PromotionSerializer,
+    ProductRelationSerializer,
+)
 from .upload_security import validate_product_image_upload
 from core.permissions import IsOrganizationMember
 from core.mixins import OrgScopedMixin
@@ -17,7 +24,18 @@ from core.mixins import OrgScopedMixin
 class ProductViewSet(OrgScopedMixin, viewsets.ModelViewSet):
     permission_classes = [IsOrganizationMember]
     serializer_class = ProductSerializer
-    filterset_fields = ['status', 'category', 'is_active', 'offer_type', 'price_type']
+    filterset_fields = [
+        'status',
+        'category',
+        'subcategory',  # P1.1
+        'is_active',
+        'offer_type',
+        'price_type',
+        'style',  # P1.1
+        'formality',  # P1.1
+        'target_audience',  # P1.1
+        'is_bestseller',  # P1.1
+    ]
     search_fields = ['title', 'brand', 'category', 'description', 'fulfillment_notes']
 
     def get_queryset(self):
@@ -144,3 +162,37 @@ class InventoryMovementViewSet(OrgScopedMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         return InventoryMovement.objects.filter(organization=self.request.user.organization)
+
+
+# P1.1: New ViewSets for Promotion and ProductRelation
+
+
+class PromotionViewSet(OrgScopedMixin, viewsets.ModelViewSet):
+    """P1.1: ViewSet for managing promotions and discounts."""
+
+    permission_classes = [IsOrganizationMember]
+    serializer_class = PromotionSerializer
+    filterset_fields = ['applies_to', 'discount_type', 'is_active']
+    search_fields = ['title', 'description']
+
+    def get_queryset(self):
+        return Promotion.objects.filter(organization=self.request.user.organization)
+
+    def perform_create(self, serializer):
+        serializer.save(organization=self.request.user.organization)
+
+
+class ProductRelationViewSet(OrgScopedMixin, viewsets.ModelViewSet):
+    """P1.1: ViewSet for managing product relationships and graphs."""
+
+    permission_classes = [IsOrganizationMember]
+    serializer_class = ProductRelationSerializer
+    filterset_fields = ['relation_type', 'source_product', 'target_product']
+
+    def get_queryset(self):
+        return ProductRelation.objects.filter(organization=self.request.user.organization).select_related(
+            'source_product', 'target_product'
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(organization=self.request.user.organization)

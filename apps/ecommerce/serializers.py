@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Product, ProductVariant, Order, InventoryMovement
+from .models import Product, ProductVariant, Order, InventoryMovement, Promotion, ProductRelation
 
 
 class ProductVariantSerializer(serializers.ModelSerializer):
@@ -170,6 +170,7 @@ class PublicProductSerializer(serializers.ModelSerializer):
             'brand',
             'description',
             'category',
+            'subcategory',  # P1.1
             'offer_type',
             'price_type',
             'service_mode',
@@ -181,6 +182,14 @@ class PublicProductSerializer(serializers.ModelSerializer):
             'attributes',
             'images',
             'tags',
+            'occasion',  # P1.1
+            'style',  # P1.1
+            'color',  # P1.1
+            'material',  # P1.1
+            'fit',  # P1.1
+            'formality',  # P1.1
+            'target_audience',  # P1.1
+            'is_bestseller',  # P1.1
             'status',
             'variants',
             'created_at',
@@ -213,3 +222,21 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = '__all__'
         read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
+
+
+class PromotionSerializer(serializers.ModelSerializer):
+    """P1.1: Promotion serializer for managing discounts and offers."""
+
+    class Meta:
+        model = Promotion
+        fields = '__all__'
+        read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
+
+
+class ProductRelationSerializer(serializers.ModelSerializer):
+    """P1.1: ProductRelation serializer for managing product graphs."""
+
+    class Meta:
+        model = ProductRelation
+        fields = '__all__'
+        read_only_fields = ['id', 'organization', 'created_at']
