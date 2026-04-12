@@ -54,6 +54,7 @@ class Product(models.Model):
     target_audience = models.CharField(max_length=100, blank=True)  # e.g., "adult men", "young women"
     is_bestseller = models.BooleanField(default=False)
     popularity_score = models.FloatField(default=0.0)  # 0–100, manual or auto-computed
+    embedding_vector = models.JSONField(default=list, blank=True)  # text-embedding-3-small, list of floats
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

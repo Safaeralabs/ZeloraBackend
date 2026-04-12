@@ -14,11 +14,44 @@ logger = structlog.get_logger(__name__)
 def lookup_products(organization, query: str, limit: int = 5) -> list[dict]:
     """
     Search active products in the organization's catalog by query text.
-    Matches against title, description, category, brand and tags.
+    P1.2: Tries semantic search (embeddings + cosine similarity) first, falls back to keyword matching.
+    Matches against title, description, category, brand, and P1.1 enriched attributes.
     """
     try:
         from apps.ecommerce.models import Product
+        import os
 
+        # P1.2: Try semantic search first if API key and embeddings available
+        api_key = os.environ.get('OPENAI_API_KEY', '')
+        if api_key:
+            from .sales_kb import _embed_query, _cosine_similarity
+
+            query_vec = _embed_query(query)
+            if query_vec:
+                # Get all products with embeddings for this org
+                all_products = Product.objects.filter(
+                    organization=organization,
+                    is_active=True,
+                    status='active'
+                ).exclude(embedding_vector=[]).prefetch_related('variants')
+
+                # Score by cosine similarity
+                scored = []
+                for p in all_products:
+                    if p.embedding_vector:
+                        score = _cosine_similarity(query_vec, p.embedding_vector)
+                        if score > 0.20:  # threshold matching KB
+                            scored.append((p, score))
+
+                # Sort by score descending, take top limit
+                scored.sort(key=lambda x: x[1], reverse=True)
+                products = [p for p, _ in scored[:limit]]
+
+                if products:
+                    return [_serialize_product(p) for p in products]
+                # Fall through to keyword search if no semantic matches
+
+        # P1.2 Fallback: keyword search (existing logic)
         words = [w for w in query.lower().split() if len(w) > 2][:5]
         if not words:
             products = Product.objects.filter(
