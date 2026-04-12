@@ -159,6 +159,7 @@ def score_and_rank_products(
     stage: str,
     promotions: list[dict],
     message_text: str,
+    organization_id: str = None,
 ) -> list[dict]:
     """
     Score and rank products using composite formula.
@@ -169,12 +170,15 @@ def score_and_rank_products(
             + 0.15 * commercial_fit
             + 0.10 * popularity
 
+    P3.2: Uses ProductRelation graph to boost related products.
+
     Args:
       products: list of product dicts (from _serialize_product)
       buyer: BuyerProfile instance
       stage: current conversation stage
       promotions: active promotions list
       message_text: raw buyer message (for occasion extraction)
+      organization_id: for P3.2 product graph lookup (optional)
 
     Returns:
       Top 3 products sorted descending by score, each with 'recommendation_score' and 'score_breakdown'.
@@ -184,6 +188,9 @@ def score_and_rank_products(
 
     try:
         occasion_hints = _extract_occasion_hints(message_text)
+
+        # P3.2: Build set of product IDs already shown for graph boost
+        already_shown_ids = set(str(p.get('id', '')) for p in products[:2] if p.get('id'))
 
         scored_products = []
         for product in products:
@@ -200,6 +207,21 @@ def score_and_rank_products(
             # Composite score
             total_score = 0.45 * aes + 0.30 * intent + 0.15 * comm + 0.10 * pop
 
+            # P3.2: Check ProductRelation graph for cross-sell/bundle opportunities
+            product_id = str(product.get('id', ''))
+            if organization_id and already_shown_ids:
+                for shown_id in already_shown_ids:
+                    # If this product combines_with or bundles_with a shown product, boost score
+                    if product_id != shown_id:
+                        related = _find_related_products(
+                            shown_id, 'combina_con', organization_id
+                        ) or _find_related_products(
+                            shown_id, 'bundle_con', organization_id
+                        )
+                        if product_id in related:
+                            total_score += 0.1  # Cross-sell/bundle bonus
+                            break
+
             # Augment product dict with scoring info
             product_copy = product.copy()
             product_copy['recommendation_score'] = round(total_score, 3)
@@ -208,6 +230,7 @@ def score_and_rank_products(
                 'intent_fit': round(intent, 3),
                 'commercial_fit': round(comm, 3),
                 'popularity': round(pop, 3),
+                'graph_bonus': 0.1 if total_score > 0.5 else 0.0,  # P3.2
             }
 
             scored_products.append((product_copy, total_score))
@@ -222,3 +245,31 @@ def score_and_rank_products(
         logger.warning('recommendation_scoring_error', error=str(exc))
         # Fallback: return first limit products unchanged
         return products[:3]
+
+
+def _find_related_products(product_id: str, relation_type: str, organization_id: str) -> list[str]:
+    """
+    P3.2: Find products related to a given product via ProductRelation graph.
+
+    Args:
+        product_id: Source product ID
+        relation_type: 'combina_con', 'alternativa_barata', 'alternativa_premium', 'similar_a', etc.
+        organization_id: Organization scope
+
+    Returns:
+        List of target product IDs
+    """
+    try:
+        from apps.ecommerce.models import ProductRelation
+
+        relations = ProductRelation.objects.filter(
+            organization_id=organization_id,
+            source_product_id=product_id,
+            relation_type=relation_type,
+        ).values_list('target_product_id', flat=True)[:5]
+
+        return [str(pid) for pid in relations]
+
+    except Exception as exc:
+        logger.warning('find_related_products_error', error=str(exc))
+        return []

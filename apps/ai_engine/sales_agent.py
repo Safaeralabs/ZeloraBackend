@@ -173,8 +173,12 @@ class SalesAgent:
         promotions = get_active_promotions(organization)
 
         # P1.3: Score and rank products (top 3) using composite recommendation engine
+        # P3.2: Include organization_id for product graph lookup
         from .recommendation import score_and_rank_products
-        products = score_and_rank_products(products, buyer, stage, promotions, message_text)
+        products = score_and_rank_products(
+            products, buyer, stage, promotions, message_text,
+            organization_id=str(organization.id)
+        )
 
         contact = getattr(conversation, 'contact', None)
         order_history = get_order_history(organization, contact) if contact else []
