@@ -15,6 +15,14 @@ class MetricsSnapshot(models.Model):
     avg_response_time_s = models.FloatField(default=0)
     csat_score = models.FloatField(default=0)
     ai_handled = models.IntegerField(default=0)
+    # P3.3: Commercial metrics
+    conversations_with_order = models.IntegerField(default=0)  # conversations that converted to orders
+    cvr = models.FloatField(default=0, help_text='Conversion rate: conversations_with_order / total_conversations')
+    total_order_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    aov = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text='Average order value')
+    reply_rate = models.FloatField(default=0, help_text='% conversations where bot replied')
+    naturalness_score = models.FloatField(default=0, help_text='Avg naturalness from evaluator (0-1)')
+    brand_fit_score = models.FloatField(default=0, help_text='Avg brand_fit from evaluator (0-1)')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
