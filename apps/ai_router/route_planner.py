@@ -120,12 +120,12 @@ class RoutePlanner:
                         payload={'task_type': 'stock_check', 'priority': 'high'},
                     )
                 ]
-            if not capabilities['sales_enabled'] and capabilities['general_enabled']:
+            if not capabilities['sales_enabled']:
                 return (
-                    RouteType.ROUTE_TO_GENERAL_AGENT,
-                    'general_support',
-                    'general_agent',
-                    'handoff_to_general_agent',
+                    RouteType.DIRECT_AI_REPLY,
+                    None,
+                    None,
+                    'generate_direct_reply',
                     [],
                 )
             return (
@@ -175,12 +175,12 @@ class RoutePlanner:
                     'continue_with_sales_agent',
                     [],
                 )
-            if capabilities['general_enabled']:
+            if capabilities['sales_enabled']:
                 return (
-                    RouteType.ROUTE_TO_GENERAL_AGENT,
-                    'general_support',
-                    'general_agent',
-                    'handoff_to_general_agent',
+                    RouteType.ROUTE_TO_SALES_AGENT,
+                    'sales_pipeline',
+                    'sales_agent',
+                    'handoff_to_sales_agent',
                     [],
                 )
             return (
@@ -210,20 +210,12 @@ class RoutePlanner:
                     'continue_with_sales_agent',
                     [],
                 )
-            if capabilities['general_enabled']:
+            if not capabilities['sales_enabled']:
                 return (
-                    RouteType.ROUTE_TO_GENERAL_AGENT,
-                    'general_support',
-                    'general_agent',
-                    'handoff_to_general_agent',
-                    [],
-                )
-            if capabilities['general_enabled'] and not capabilities['sales_enabled']:
-                return (
-                    RouteType.ROUTE_TO_GENERAL_AGENT,
-                    'general_support',
-                    'general_agent',
-                    'handoff_to_general_agent',
+                    RouteType.DIRECT_AI_REPLY,
+                    None,
+                    None,
+                    'generate_direct_reply',
                     [],
                 )
             return (
@@ -246,7 +238,6 @@ class RoutePlanner:
         metadata = getattr(event, 'metadata', None) or {}
         raw = metadata.get('agent_capabilities') or {}
         return {
-            'general_enabled': bool(raw.get('general_enabled', True)),
             'sales_enabled': bool(raw.get('sales_enabled', True)),
         }
 

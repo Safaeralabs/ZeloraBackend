@@ -26,19 +26,33 @@ from .sales_models import (
     DECISION_QUALIFY,
     _NEGOTIATION_SIGNALS,
     _STAGE_SIGNALS,
-    BrandProfile,
     BuyerProfile,
     BusinessContext,
     BrandProfile,
     CommerceRules,
     SalesContext,
+    SalesPlaybook,
     SalesAction,
     HandoffDecision,
     SalesAgentResult,
 )
-from .sales_context import _load_sales_context, _create_followup_task
-from .sales_scope import _guard_general_scope_request, _enforce_reply_scope, _strengthen_closing_reply
-from .sales_reply import _generate_reply, _apply_brand_voice
+from .sales_context import _load_sales_context, _create_followup_task, _extract_kb_policy_overrides
+from .sales_scope import (
+    _guard_general_scope_request,
+    _guard_out_of_scope_request,
+    _enforce_reply_scope,
+    _strengthen_closing_reply,
+)
+from .sales_reply import (
+    _generate_reply,
+    _apply_brand_voice,
+    _build_context_block,
+    _build_system_prompt,
+    _heuristic_reply,
+    _humanize_sales_reply,
+    _guard_out_of_scope_brand_query,
+    _avoid_consecutive_repeat,
+)
 from .sales_kb import _lookup_relevant_knowledge
 
 logger = structlog.get_logger(__name__)
@@ -177,7 +191,8 @@ class SalesAgent:
         from .recommendation import score_and_rank_products
         products = score_and_rank_products(
             products, buyer, stage, promotions, message_text,
-            organization_id=str(organization.id)
+            organization_id=str(organization.id),
+            prior_product_ids=contact_memory.get('last_products_shown', []) if isinstance(contact_memory, dict) else [],
         )
 
         contact = getattr(conversation, 'contact', None)
@@ -335,7 +350,19 @@ def _profile_buyer(text: str, buyer_model: dict[str, Any] | None = None, stage: 
     elif any(token in text for token in ('comparar', 'diferencia', 'cual', 'entre', 'opciones')):
         style = 'comparative'
 
-    return BuyerProfile(priority=priority, quantity=quantity, urgency=urgency, objection=objection, style=style)
+    profile = BuyerProfile(priority=priority, quantity=quantity, urgency=urgency, objection=objection, style=style)
+
+    # P3.1: lightweight memory signals for later persistence
+    occasion_hints = _extract_occasion_hints(text)
+    if occasion_hints:
+        profile._occasion_hints = occasion_hints
+    budget_min, budget_max = _extract_budget_range(text)
+    if budget_min is not None:
+        profile._budget_min = budget_min
+    if budget_max is not None:
+        profile._budget_max = budget_max
+
+    return profile
 
 
 def _classify_stage(text: str, buyer_model: dict[str, Any] | None = None) -> tuple[str, float]:
@@ -400,6 +427,67 @@ def _detect_close_signals(text: str) -> list[str]:
     if any(token in text for token in ('como sigo', 'siguiente paso', 'que hago', 'como lo pido', 'como cerramos', 'como aparto')):
         signals.append('next_step_intent')
     return signals
+
+
+def _extract_occasion_hints(text: str) -> list[str]:
+    hint_map = {
+        'boda': ('boda', 'wedding', 'casamiento', 'matrimonio'),
+        'cumpleanos': ('cumple', 'birthday', 'cumpleanos', 'cumpleaños'),
+        'trabajo': ('trabajo', 'laboral', 'oficina', 'empresa', 'business'),
+        'cena': ('cena', 'dinner', 'restaurante', 'noche'),
+        'casual': ('casual', 'relajado', 'fin de semana', 'weekend'),
+        'formal': ('formal', 'gala', 'evento', 'elegante'),
+        'regalo': ('regalo', 'gift', 'obsequio'),
+    }
+    hints: list[str] = []
+    for key, tokens in hint_map.items():
+        if any(token in text for token in tokens):
+            hints.append(key)
+    return hints
+
+
+def _extract_budget_range(text: str) -> tuple[float | None, float | None]:
+    budget_tokens = ('presupuesto', 'budget', 'hasta', 'max', 'tope', 'entre', 'rango')
+    if not any(token in text for token in budget_tokens):
+        return None, None
+
+    matches = re.findall(r'(\d+(?:[.,]\d+)?)([kKmM]?)', text)
+    values: list[float] = []
+    for raw_number, suffix in matches:
+        parsed = _parse_amount(raw_number, suffix)
+        if parsed is not None and parsed > 0:
+            values.append(parsed)
+    if not values:
+        return None, None
+
+    if len(values) == 1:
+        return None, values[0]
+
+    if 'entre' in text or ' a ' in text or '-' in text:
+        return min(values), max(values)
+    return None, values[0]
+
+
+def _parse_amount(raw_number: str, suffix: str) -> float | None:
+    try:
+        cleaned = (raw_number or '').strip()
+        if '.' in cleaned and ',' in cleaned:
+            cleaned = cleaned.replace('.', '').replace(',', '.')
+        elif '.' in cleaned and len(cleaned.split('.')[-1]) == 3:
+            cleaned = cleaned.replace('.', '')
+        elif ',' in cleaned and len(cleaned.split(',')[-1]) == 3:
+            cleaned = cleaned.replace(',', '')
+        else:
+            cleaned = cleaned.replace(',', '.')
+
+        value = float(cleaned)
+        if suffix.lower() == 'k':
+            value *= 1000
+        elif suffix.lower() == 'm':
+            value *= 1_000_000
+        return value
+    except Exception:
+        return None
 
 
 def _derive_decision(stage: str, products: list[dict[str, Any]], buyer: BuyerProfile) -> str:
@@ -527,6 +615,20 @@ def _update_contact_memory(contact, organization, buyer: BuyerProfile, products:
             'style': buyer.style,
         }
 
+        # Persist inferred budget hints when available
+        budget_min = getattr(buyer, '_budget_min', None)
+        budget_max = getattr(buyer, '_budget_max', None)
+        if budget_min is not None:
+            if memory.inferred_budget_min is None:
+                memory.inferred_budget_min = budget_min
+            else:
+                memory.inferred_budget_min = min(float(memory.inferred_budget_min), budget_min)
+        if budget_max is not None:
+            if memory.inferred_budget_max is None:
+                memory.inferred_budget_max = budget_max
+            else:
+                memory.inferred_budget_max = max(float(memory.inferred_budget_max), budget_max)
+
         # Track categories (simplified)
         if products:
             cats = list(set(p.get('category', '') for p in products if p.get('category')))
@@ -538,6 +640,14 @@ def _update_contact_memory(contact, organization, buyer: BuyerProfile, products:
         # (More sophisticated extraction would happen during extraction)
         if hasattr(buyer, '_occasion_hints'):
             memory.occasion_hints = list(set(buyer._occasion_hints + (memory.occasion_hints or [])))[:10]
+
+        # Mark converted if this contact has non-cancelled orders
+        from apps.ecommerce.models import Order
+        if not memory.converted:
+            memory.converted = Order.objects.filter(
+                organization=organization,
+                contact=contact,
+            ).exclude(status='cancelled').exists()
 
         memory.conversation_count += 1
         memory.last_conversation_at = timezone.now()

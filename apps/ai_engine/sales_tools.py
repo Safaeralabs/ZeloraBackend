@@ -137,7 +137,7 @@ def get_active_promotions(organization, product=None) -> list[dict]:
         ).filter(
             Q(starts_at__isnull=True) | Q(starts_at__lte=now),
             Q(ends_at__isnull=True) | Q(ends_at__gte=now),
-        )
+        ).prefetch_related('products')
 
         # Filter by product if provided
         if product:
@@ -155,6 +155,8 @@ def get_active_promotions(organization, product=None) -> list[dict]:
                 'discount_type': p.discount_type,
                 'discount_value': float(p.discount_value),
                 'applies_to': p.applies_to,
+                'category': p.category or '',
+                'product_ids': [str(pid) for pid in p.products.values_list('id', flat=True)],
             }
             for p in qs[:5]
         ]
@@ -245,5 +247,6 @@ def _serialize_product(product) -> dict:
         'formality': product.formality,  # P1.1
         'target_audience': product.target_audience,  # P1.1
         'is_bestseller': product.is_bestseller,  # P1.1
+        'popularity_score': product.popularity_score,  # P1.3
         'promotion': (product.attributes or {}).get('promotion', {}),  # Legacy fallback
     }

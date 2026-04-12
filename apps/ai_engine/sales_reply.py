@@ -5,15 +5,22 @@ All inter-app imports (openai, usage_tracker, etc.) are deferred inside function
 """
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import quote
 
 import structlog
 
 from .sales_models import (
     STAGE_CHECKOUT_BLOCKED,
+    STAGE_CLOSED_LOST,
+    STAGE_CLOSED_WON,
     STAGE_CONSIDERING,
     STAGE_DISCOVERING,
     STAGE_FOLLOW_UP_NEEDED,
+    STAGE_HUMAN_HANDOFF,
+    STAGE_INTENT_TO_BUY,
+    STAGE_LOST,
     BrandProfile,
     BuyerProfile,
     BusinessContext,
@@ -620,7 +627,16 @@ def _build_context_block(
             product_lines.append(f'- {product["title"]} | {price_label} | {avail_label} | {meta}{narrative_block}')
     promotion_lines = '\n'.join(f'- {promo}' for promo in promotions[:2]) if promotions else 'Sin promociones activas.'
     stock_line = f'Stock validado: {stock_info.get("total_available")}' if stock_info else 'Stock no consultado.'
-    return (
+    contact_memory_line = (
+        f'P3.1 Contacto Memory: conversaciones_previas={contact_memory.get("conversation_count", 0)}, '
+        f'presupuesto_inferido={contact_memory.get("inferred_budget_min")}-{contact_memory.get("inferred_budget_max")}, '
+        f'ultimas_ocasiones={contact_memory.get("occasion_hints", [])}, '
+        f'intento_previo={contact_memory.get("last_intent", "ninguno")}, '
+        f'convertido={contact_memory.get("converted", False)}\n'
+        if contact_memory and contact_memory.get('has_prior_interactions')
+        else ''
+    )
+    base_block = (
         '\n--- CONTEXTO ---\n'
         f'conversation_state: {conversation_state}\n'
         f'marca: {brand.brand_name or business.org_name or "no definida"}\n'
@@ -640,7 +656,7 @@ def _build_context_block(
         f'Regla entrega: {rules.delivery_promise_rule or "no definida"}\n'
         f'Regla devoluciones: {rules.return_policy_summary or "no definida"}\n'
         f'Comprador: prioridad={buyer.priority}, urgencia={buyer.urgency}, estilo={buyer.style}, objecion={buyer.objection or "ninguna"}, etapa={stage}\n'
-        + (f'P3.1 Contacto Memory: conversaciones_previas={contact_memory.get("conversation_count", 0)}, presupuesto_inferido={contact_memory.get("inferred_budget_min")}-{contact_memory.get("inferred_budget_max")}, ultimas_ocasiones={contact_memory.get("occasion_hints", [])}, intento_previo={contact_memory.get("last_intent", "ninguno")}, convertido={contact_memory.get("converted", False)}\n' if contact_memory and contact_memory.get('has_prior_interactions') else '')
+        f'{contact_memory_line}'
         f'Regla de seguimiento: modo={prefs.get("followup_mode", "suave")} | max_followups={prefs.get("max_followups", 1)} | autonomia={prefs.get("autonomy_level", "semi_autonomo")} | recommendation_depth={prefs.get("recommendation_depth", 2)} | escalado={prefs.get("handoff_mode", "balanceado")}.\n'
         f'Marca: tono={brand.tone_of_voice}, formalidad={brand.formality_level}, personalidad={brand.brand_personality or "n/d"}, propuesta={brand.value_proposition or "n/d"}\n'
         f'Diferenciales marca: {", ".join(brand.key_differentiators[:4]) or "ninguno"}\n'
@@ -653,6 +669,9 @@ def _build_context_block(
         f'Knowledge base completa resumida:\n{full_knowledge_snapshot}\n'
         f'Historial reciente:\n{history}\n'
         f'Knowledge relevante:\n{knowledge}\n'
+    )
+    return (
+        base_block
         + '\n'.join(product_lines) + '\n'
         + promotion_lines + '\n'
         + stock_line + '\n--- FIN CONTEXTO ---\n'
@@ -1079,6 +1098,135 @@ No agregues información nueva. Solo mejora el tono y la fluidez."""
         return None
 
 
+def _store_last_evaluation(conversation, evaluation: dict[str, Any]) -> None:
+    """Best-effort store of evaluator output for downstream logging."""
+    def _dim_to_score(value: Any) -> float | None:
+        try:
+            numeric = float(value)
+            if numeric > 1:
+                numeric = numeric / 5.0
+            return max(0.0, min(1.0, numeric))
+        except Exception:
+            return None
+
+    try:
+        if not hasattr(conversation, 'metadata') or not conversation.metadata:
+            conversation.metadata = {}
+        conversation.metadata['last_evaluation'] = {
+            'score': evaluation.get('score'),
+            'flags': evaluation.get('flags', []),
+            'action': evaluation.get('action', 'send'),
+            'feedback': evaluation.get('feedback', ''),
+            'coherencia': _dim_to_score(evaluation.get('coherencia')),
+            'naturalidad': _dim_to_score(evaluation.get('naturalidad')),
+            'brand_fit': _dim_to_score(evaluation.get('brand_fit')),
+            'cta_quality': _dim_to_score(evaluation.get('cta_quality')),
+            'gate_enforced': True,
+        }
+    except Exception:
+        pass
+
+
+def _escalation_reply(sales_ctx: SalesContext, stage: str) -> str:
+    base = (
+        'Prefiero pasarte con un asesor para darte una respuesta precisa y segura '
+        'antes de avanzar con la compra.'
+    )
+    return _apply_brand_voice(base, sales_ctx.brand, sales_ctx.playbook, stage)
+
+
+def _apply_quality_gate(
+    *,
+    reply: str,
+    stage: str,
+    buyer: BuyerProfile,
+    sales_ctx: SalesContext,
+    channel: str,
+    settings,
+    conversation,
+    products: list[dict[str, Any]],
+) -> str:
+    """
+    Enforce evaluator action:
+    - send: return as-is
+    - rewrite: run one extra rewrite pass and re-evaluate once
+    - escalate: return safe handoff message
+    """
+    try:
+        from .sales_evaluator import evaluate_reply
+
+        evaluation = evaluate_reply(reply, stage, buyer, sales_ctx.commerce_rules, settings)
+        action = evaluation.get('action', 'send')
+
+        if action == 'send':
+            _store_last_evaluation(conversation, evaluation)
+            return reply
+
+        if action == 'rewrite':
+            rewritten = _human_rewrite_reply(
+                draft=reply,
+                brand=sales_ctx.brand,
+                channel=channel,
+                stage=stage,
+                settings=settings,
+            )
+            if rewritten:
+                rewritten = _append_product_links(rewritten, products, sales_ctx.business.org_slug)
+                rewritten = _append_payment_links(
+                    rewritten,
+                    sales_ctx.business.payment_methods,
+                    sales_ctx.business.org_slug,
+                )
+                rewrite_eval = evaluate_reply(rewritten, stage, buyer, sales_ctx.commerce_rules, settings)
+                _store_last_evaluation(conversation, rewrite_eval)
+                if rewrite_eval.get('action') == 'escalate':
+                    return _escalation_reply(sales_ctx, stage)
+                return rewritten
+
+            # Rewrite failed, escalate conservatively.
+            failed_eval = {
+                **evaluation,
+                'action': 'escalate',
+                'flags': list(dict.fromkeys((evaluation.get('flags') or []) + ['rewrite_failed'])),
+            }
+            _store_last_evaluation(conversation, failed_eval)
+            return _escalation_reply(sales_ctx, stage)
+
+        # action == 'escalate' or unknown
+        _store_last_evaluation(conversation, evaluation)
+        return _escalation_reply(sales_ctx, stage)
+
+    except Exception:
+        # If evaluator path fails, keep original reply to avoid blocking sales flow.
+        return reply
+
+
+def _is_catalog_request(message_text: str, stage: str) -> bool:
+    text = (message_text or '').lower()
+    product_signals = (
+        'producto', 'productos', 'catalogo', 'catalog', 'opciones', 'recomienda',
+        'recomendacion', 'muestr', 'que tienen', 'que venden', 'precio', 'cuanto',
+        'cuesta', 'disponible', 'stock',
+    )
+    if any(token in text for token in product_signals):
+        return True
+    return stage in (
+        STAGE_DISCOVERING,
+        STAGE_CONSIDERING,
+        STAGE_INTENT_TO_BUY,
+        STAGE_CHECKOUT_BLOCKED,
+    )
+
+
+def _empty_catalog_reply(sales_ctx: SalesContext, stage: str) -> str:
+    reply = (
+        'Ahora mismo no tenemos productos activos cargados en este canal, '
+        'asi que no puedo recomendarte opciones reales todavia. '
+        'Si quieres, te aviso apenas el catalogo este publicado.'
+    )
+    return _apply_brand_voice(reply, sales_ctx.brand, sales_ctx.playbook, stage)
+
+
 def _generate_reply(
     *,
     message_text: str,
@@ -1114,6 +1262,15 @@ def _generate_reply(
         if out_of_scope_reply:
             return out_of_scope_reply
 
+        # Guard: never invent products when the organization has no active catalog.
+        has_catalog_snapshot = bool(sales_ctx.catalog_snapshot)
+        if (
+            not has_catalog_snapshot
+            and not products
+            and _is_catalog_request(message_text, stage)
+        ):
+            return _empty_catalog_reply(sales_ctx, stage)
+
         # P2.1 Step 1: Sales Brain (existing _llm_reply)
         if django_settings.ENABLE_REAL_AI and django_settings.OPENAI_API_KEY:
             brain_reply = _llm_reply(
@@ -1143,26 +1300,26 @@ def _generate_reply(
                 reply = rewritten or brain_reply
 
                 # Post-processing
-                reply = _avoid_consecutive_repeat(reply, conversation)
+                reply = _avoid_consecutive_repeat(
+                    reply=reply,
+                    conversation=conversation,
+                    message_text=message_text,
+                    stage=stage,
+                    buyer=buyer,
+                    products=products,
+                )
                 reply = _append_product_links(reply, products, sales_ctx.business.org_slug)
                 final_reply = _append_payment_links(reply, sales_ctx.business.payment_methods, sales_ctx.business.org_slug)
-
-                # P2.4: Optional pre-send evaluation (informative, doesn't block)
-                try:
-                    from .sales_evaluator import evaluate_reply
-                    evaluation = evaluate_reply(final_reply, stage, buyer, sales_ctx.commerce_rules, django_settings)
-                    # Store in conversation metadata for logging
-                    if not hasattr(conversation, 'metadata') or not conversation.metadata:
-                        conversation.metadata = {}
-                    conversation.metadata['last_evaluation'] = {
-                        'score': evaluation['score'],
-                        'flags': evaluation['flags'],
-                        'action': evaluation['action'],
-                    }
-                except Exception:
-                    pass  # Evaluation failure doesn't block the reply
-
-                return final_reply
+                return _apply_quality_gate(
+                    reply=final_reply,
+                    stage=stage,
+                    buyer=buyer,
+                    sales_ctx=sales_ctx,
+                    channel=channel,
+                    settings=django_settings,
+                    conversation=conversation,
+                    products=products,
+                )
 
         # Fallback to heuristic reply
         reply = _heuristic_reply(
@@ -1174,27 +1331,26 @@ def _generate_reply(
             promotions=promotions,
             sales_ctx=sales_ctx,
         )
-        reply = _avoid_consecutive_repeat(reply, conversation)
+        reply = _avoid_consecutive_repeat(
+            reply=reply,
+            conversation=conversation,
+            message_text=message_text,
+            stage=stage,
+            buyer=buyer,
+            products=products,
+        )
         reply = _append_product_links(reply, products, sales_ctx.business.org_slug)
         final_reply = _append_payment_links(reply, sales_ctx.business.payment_methods, sales_ctx.business.org_slug)
-
-        # P2.4: Optional pre-send evaluation (informative, doesn't block)
-        try:
-            from .sales_evaluator import evaluate_reply
-            from django.conf import settings as django_settings
-            evaluation = evaluate_reply(final_reply, stage, buyer, sales_ctx.commerce_rules, django_settings)
-            # Store in conversation metadata for logging
-            if not hasattr(conversation, 'metadata') or not conversation.metadata:
-                conversation.metadata = {}
-            conversation.metadata['last_evaluation'] = {
-                'score': evaluation['score'],
-                'flags': evaluation['flags'],
-                'action': evaluation['action'],
-            }
-        except Exception:
-            pass  # Evaluation failure doesn't block the reply
-
-        return final_reply
+        return _apply_quality_gate(
+            reply=final_reply,
+            stage=stage,
+            buyer=buyer,
+            sales_ctx=sales_ctx,
+            channel=channel,
+            settings=django_settings,
+            conversation=conversation,
+            products=products,
+        )
 
     except Exception as exc:
         logger.warning('generate_reply_error', error=str(exc))

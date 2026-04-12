@@ -17,12 +17,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
-from django.db.models import Count, Avg, Q
+from django.db.models import Avg, Count, Sum
 from django.utils import timezone
 
 from apps.accounts.models import Organization
 from apps.analytics.models import MetricsSnapshot
-from apps.conversations.models import Conversation, ConversationMessage
+from apps.conversations.models import Conversation
 from apps.ecommerce.models import Order
 from apps.ai_engine.models import SalesAgentLog
 
@@ -102,15 +102,25 @@ class Command(BaseCommand):
             escalated = channel_convs.filter(estado='escalado').count()
 
             # P3.3: CVR (Conversion Rate)
+            channel_orders = self._orders_for_channel(
+                org=org,
+                channel_convs=channel_convs,
+                canal=canal,
+                start_of_day=start_of_day,
+                end_of_day=end_of_day,
+            )
+            contact_ids_with_orders = set(
+                channel_orders.exclude(contact_id__isnull=True).values_list('contact_id', flat=True)
+            )
             conversations_with_orders = channel_convs.filter(
-                orders__isnull=False
-            ).distinct().count()
-            cvr = (conversations_with_orders / channel_total * 100) if channel_total > 0 else 0
+                contact_id__in=contact_ids_with_orders
+            ).exclude(contact_id__isnull=True).distinct().count()
+            # CVR ratio in 0-1 range (not percentage)
+            cvr = (conversations_with_orders / channel_total) if channel_total > 0 else 0
 
             # P3.3: AOV (Average Order Value)
-            orders = Order.objects.filter(conversation__in=channel_convs)
-            total_order_value = orders.aggregate(Avg('total'))['total__avg'] or 0
-            total_revenue = orders.aggregate(Sum=Sum('total'))['Sum'] or Decimal(0)
+            avg_order_value = channel_orders.aggregate(avg_total=Avg('total'))['avg_total'] or Decimal(0)
+            total_revenue = channel_orders.aggregate(sum_total=Sum('total'))['sum_total'] or Decimal(0)
 
             # P3.3: Reply Rate (% conversations where bot replied)
             bot_replied = channel_convs.filter(
@@ -121,18 +131,22 @@ class Command(BaseCommand):
             # P3.3: Quality scores from evaluator (from SalesAgentLog)
             agent_logs = SalesAgentLog.objects.filter(
                 conversation__in=channel_convs,
+                channel=canal,
                 evaluation_score__isnull=False,
             )
 
-            naturalness_scores = agent_logs.filter(
-                evaluation_flags__contains='unnatural'  # TODO: better extraction
-            ).aggregate(Avg('evaluation_score'))['evaluation_score__avg']
-            naturalness_score = float(naturalness_scores) if naturalness_scores else 0.7
+            avg_naturalidad = agent_logs.aggregate(avg_nat=Avg('evaluation_naturalidad'))['avg_nat']
+            avg_brand_fit = agent_logs.aggregate(avg_brand=Avg('evaluation_brand_fit'))['avg_brand']
+            avg_eval_score = agent_logs.aggregate(avg_score=Avg('evaluation_score'))['avg_score']
 
-            brand_fit_scores = agent_logs.filter(
-                evaluation_flags__contains='brand_fit'  # TODO: better extraction
-            ).aggregate(Avg('evaluation_score'))['evaluation_score__avg']
-            brand_fit_score = float(brand_fit_scores) if brand_fit_scores else 0.75
+            naturalness_score = (
+                float(avg_naturalidad) if avg_naturalidad is not None
+                else (float(avg_eval_score) if avg_eval_score is not None else 0.7)
+            )
+            brand_fit_score = (
+                float(avg_brand_fit) if avg_brand_fit is not None
+                else (float(avg_eval_score) if avg_eval_score is not None else 0.75)
+            )
 
             # Create or update MetricsSnapshot
             snapshot, created = MetricsSnapshot.objects.update_or_create(
@@ -147,7 +161,7 @@ class Command(BaseCommand):
                     'conversations_with_order': conversations_with_orders,
                     'cvr': cvr,
                     'total_order_value': total_revenue,
-                    'aov': Decimal(str(total_order_value or 0)),
+                    'aov': Decimal(str(avg_order_value or 0)),
                     'reply_rate': reply_rate,
                     'naturalness_score': naturalness_score,
                     'brand_fit_score': brand_fit_score,
@@ -157,12 +171,37 @@ class Command(BaseCommand):
             action = 'Created' if created else 'Updated'
             self.stdout.write(
                 f'  {org.name} / {canal}: {action} '
-                f'(CVR={cvr:.1f}%, AOV={total_order_value or 0:.2f}, '
+                f'(CVR={cvr:.3f}, AOV={avg_order_value or 0:.2f}, '
                 f'Reply={reply_rate:.1f}%, Naturalness={naturalness_score:.2f})'
             )
 
+    def _orders_for_channel(self, *, org, channel_convs, canal: str, start_of_day, end_of_day):
+        """
+        Build an Order queryset that can be linked to channel conversations via contact + day window.
+        Orders currently do not have a direct FK to Conversation.
+        """
+        contact_ids = list(
+            channel_convs.exclude(contact_id__isnull=True)
+            .values_list('contact_id', flat=True)
+            .distinct()
+        )
+        if not contact_ids:
+            return Order.objects.none()
 
-def Sum(field):
-    """Helper to aggregate sum."""
-    from django.db.models import Sum as DjangoSum
-    return DjangoSum(field)
+        channel_map = {
+            'whatsapp': ['whatsapp'],
+            'instagram': ['instagram'],
+            'web': ['web', 'ecommerce'],
+            'app': ['app'],
+        }
+        order_channels = channel_map.get(canal)
+
+        orders = Order.objects.filter(
+            organization=org,
+            created_at__gte=start_of_day,
+            created_at__lte=end_of_day,
+            contact_id__in=contact_ids,
+        )
+        if order_channels:
+            orders = orders.filter(channel__in=order_channels)
+        return orders

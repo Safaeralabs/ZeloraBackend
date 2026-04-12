@@ -50,7 +50,6 @@ class PolicyStatus(StrEnum):
 class RouteType(StrEnum):
     DIRECT_AI_REPLY = 'direct_ai_reply'
     TRIGGER_FLOW = 'trigger_flow'
-    ROUTE_TO_GENERAL_AGENT = 'route_to_general_agent'
     ROUTE_TO_SALES_AGENT = 'route_to_sales_agent'
     ROUTE_TO_MARKETING_AGENT = 'route_to_marketing_agent'
     ROUTE_TO_OPERATIONS_AGENT = 'route_to_operations_agent'

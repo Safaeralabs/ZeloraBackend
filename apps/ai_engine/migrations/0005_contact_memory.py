@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('accounts', '0002_contact'),
+        ('accounts', '0001_initial'),
         ('ai_engine', '0004_sales_agent_log_evaluation_fields'),
     ]
 

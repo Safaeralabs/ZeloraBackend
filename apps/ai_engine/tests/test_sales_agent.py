@@ -268,6 +268,42 @@ class SalesAgentRunIntegrationTest(SimpleTestCase):
         self.assertEqual(result.decision, DECISION_ESCALATE)
         self.assertIn('asesor', result.reply_text.lower())
 
+    @patch(
+        'apps.ai_engine.sales_agent._load_sales_context',
+        return_value=SalesContext(
+            business=BusinessContext(org_name='Tienda Test', what_you_sell='Productos'),
+            brand=BrandProfile(brand_name='Tienda Test', tone_of_voice='Cercano'),
+            catalog_snapshot=[],
+        ),
+    )
+    @patch('apps.ai_engine.sales_tools.lookup_products', return_value=[])
+    @patch('apps.ai_engine.sales_tools.get_active_promotions', return_value=[])
+    @patch('apps.ai_engine.sales_tools.get_order_history', return_value=[])
+    def test_empty_catalog_product_question_does_not_invent_products(
+        self, mock_history, mock_promos, mock_products, mock_sales_ctx
+    ):
+        org = MagicMock()
+        org.id = 'org-empty'
+        org.name = 'Tienda Test'
+
+        conversation = MagicMock()
+        conversation.id = 'conv-empty'
+        conversation.contact_id = 'contact-empty'
+        conversation.contact = MagicMock()
+        conversation.messages.order_by.return_value = []
+        conversation.organization = org
+        conversation.canal = 'web'
+
+        result = self.agent.run(
+            message_text='que productos tienen?',
+            conversation=conversation,
+            organization=org,
+        )
+
+        self.assertIn('no tenemos productos activos', result.reply_text.lower())
+        self.assertNotIn('estetoscop', result.reply_text.lower())
+        self.assertNotIn('tensiomet', result.reply_text.lower())
+
 
 class SalesAgentFollowupTaskTests(SimpleTestCase):
     @patch('apps.ai_engine.models.AITask.objects.create')
@@ -546,6 +582,24 @@ class SalesAgentBrandScopeTests(SimpleTestCase):
         self.assertIn('Comfaguajira', result['reply'])
         self.assertIn('afiliaciones', result['reply'].lower())
 
+    def test_guard_general_scope_normalizes_vendemos_prefix(self):
+        sales_ctx = SalesContext(
+            business=BusinessContext(
+                org_name='MediStore',
+                what_you_sell='Vendemos equipos medicos',
+            ),
+            brand=BrandProfile(
+                brand_name='MediStore',
+                tone_of_voice='Cercano',
+            ),
+        )
+
+        result = _guard_general_scope_request('Hablame de la historia de Egipto', sales_ctx)
+
+        self.assertIsNotNone(result)
+        self.assertIn('equipos medicos', result['reply'].lower())
+        self.assertNotIn('solo te puedo ayudar con temas de medistore: vendemos', result['reply'].lower())
+
     def test_run_marks_out_of_scope_in_context_when_topic_is_unrelated(self):
         agent = SalesAgent()
         org = MagicMock()
@@ -569,4 +623,3 @@ class SalesAgentBrandScopeTests(SimpleTestCase):
         self.assertEqual(result.decision, 'discard')
         self.assertTrue(result.context_used.get('out_of_scope'))
         self.assertEqual(result.context_used.get('out_of_scope_kind'), 'unrelated_topic')
-

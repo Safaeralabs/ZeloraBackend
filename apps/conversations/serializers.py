@@ -238,6 +238,7 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
     qualification = serializers.SerializerMethodField()
     sales_stage = serializers.SerializerMethodField()
     close_signals = serializers.SerializerMethodField()
+    contact_memory = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -250,7 +251,7 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
             'contact_telefono', 'contact_email', 'contact_tipo_afiliado',
             'agent_nombre', 'owner', 'active_ai_agent', 'commercial_status', 'priority',
             'follow_up', 'opportunity', 'next_step', 'conversation_summary',
-            'escalation_reason', 'unread', 'active_flow', 'qualification', 'sales_stage', 'close_signals', 'messages', 'timeline', 'notes',
+            'escalation_reason', 'unread', 'active_flow', 'qualification', 'sales_stage', 'close_signals', 'contact_memory', 'messages', 'timeline', 'notes',
         ]
 
     def get_agent_nombre(self, obj):
@@ -321,3 +322,27 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
     def get_close_signals(self, obj):
         sales_state = serialize_sales_state(obj.metadata)
         return sales_state.get('close_signals') if sales_state else []
+
+    def get_contact_memory(self, obj):
+        contact = getattr(obj, 'contact', None)
+        if not contact:
+            return None
+        try:
+            from apps.ai_engine.models import ContactMemory
+            memory = ContactMemory.objects.filter(contact=contact).first()
+            if not memory:
+                return None
+            return {
+                'conversation_count': memory.conversation_count,
+                'inferred_budget_min': float(memory.inferred_budget_min) if memory.inferred_budget_min is not None else None,
+                'inferred_budget_max': float(memory.inferred_budget_max) if memory.inferred_budget_max is not None else None,
+                'style_cues': memory.style_cues or {},
+                'occasion_hints': memory.occasion_hints or [],
+                'category_preferences': memory.category_preferences or [],
+                'last_products_shown': memory.last_products_shown or [],
+                'last_intent': memory.last_intent or '',
+                'last_objection': memory.last_objection or '',
+                'converted': bool(memory.converted),
+            }
+        except Exception:
+            return None

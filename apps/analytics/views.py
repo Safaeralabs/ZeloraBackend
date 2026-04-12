@@ -599,6 +599,48 @@ class SalesAgentMetricsView(APIView):
             created_at__gte=since,
         ).count()
 
+        # P2.4: Evaluator quality aggregates
+        eval_logs = logs.exclude(evaluation_score__isnull=True)
+        evaluated_count = eval_logs.count()
+        eval_avg = eval_logs.aggregate(
+            coherencia=Avg('evaluation_coherencia'),
+            naturalidad=Avg('evaluation_naturalidad'),
+            brand_fit=Avg('evaluation_brand_fit'),
+            cta_quality=Avg('evaluation_cta_quality'),
+        )
+
+        # Distribution heuristic from score/flags (send|rewrite|escalate)
+        send_count = 0
+        rewrite_count = 0
+        escalate_count = 0
+        flag_counter: dict[str, int] = {}
+
+        for item in eval_logs.values('evaluation_score', 'evaluation_flags'):
+            score = float(item.get('evaluation_score') or 0.0)
+            flags = item.get('evaluation_flags') or []
+            if not isinstance(flags, list):
+                flags = []
+
+            for flag in flags:
+                if isinstance(flag, str) and flag.strip():
+                    key = flag.strip()
+                    flag_counter[key] = flag_counter.get(key, 0) + 1
+
+            if 'rewrite_failed' in flags or score < 0.35:
+                escalate_count += 1
+            elif score < 0.72 or any(flag in flags for flag in ('no_cta', 'too_long', 'unnatural', 'off_topic')):
+                rewrite_count += 1
+            else:
+                send_count += 1
+
+        def _pct(value: int) -> float:
+            return round((value / evaluated_count) * 100, 1) if evaluated_count else 0.0
+
+        top_flags = [
+            {'flag': key, 'count': value, 'pct': _pct(value)}
+            for key, value in sorted(flag_counter.items(), key=lambda x: x[1], reverse=True)[:5]
+        ]
+
         return Response({
             'period_days': days,
             'executions': executions,
@@ -609,6 +651,24 @@ class SalesAgentMetricsView(APIView):
             'product_recommendations': product_recommendations,
             'out_of_scope': out_of_scope,
             'avg_confidence_pct': round(avg_confidence * 100, 1) if avg_confidence <= 1 else round(avg_confidence, 1),
+            'evaluator': {
+                'evaluated_count': evaluated_count,
+                'distribution': {
+                    'send': send_count,
+                    'rewrite': rewrite_count,
+                    'escalate': escalate_count,
+                    'send_pct': _pct(send_count),
+                    'rewrite_pct': _pct(rewrite_count),
+                    'escalate_pct': _pct(escalate_count),
+                },
+                'dimensions': {
+                    'coherencia': round(float(eval_avg.get('coherencia') or 0.0), 2),
+                    'naturalidad': round(float(eval_avg.get('naturalidad') or 0.0), 2),
+                    'brand_fit': round(float(eval_avg.get('brand_fit') or 0.0), 2),
+                    'cta_quality': round(float(eval_avg.get('cta_quality') or 0.0), 2),
+                },
+                'top_flags': top_flags,
+            },
         })
 
 

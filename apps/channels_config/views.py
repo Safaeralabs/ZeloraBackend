@@ -206,8 +206,7 @@ def _get_agent_greeting(config: ChannelConfig) -> str:
         if onboarding:
             onboarding_settings = onboarding.settings or {}
             sales_greeting = onboarding_settings.get('sales_agent_profile', {}).get('greeting_message', '')
-            general_greeting = onboarding_settings.get('general_agent_profile', {}).get('greeting_message', '')
-            return sales_greeting or general_greeting or ''
+            return sales_greeting or ''
     except Exception:
         pass
     return ''

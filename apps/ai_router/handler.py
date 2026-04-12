@@ -51,16 +51,9 @@ def _load_agent_capabilities(organization) -> dict:
 
     config = ChannelConfig.objects.filter(organization=organization, channel='onboarding').first()
     s = normalise_settings((config.settings if config else {}) or {})
-    ga = s['general_agent']
     sa = s['sales_agent']
-    # Trial orgs (plan='pilot') cannot use the sales agent — they are limited to general agent only
-    # until they upgrade to a paid plan. This is a business rule enforced at the routing layer.
-    is_trial = organization.plan == 'pilot'
-    general_enabled = bool(ga.get('enabled', True))
-    sales_enabled = bool(sa.get('enabled', True)) and not is_trial
+    sales_enabled = bool(sa.get('enabled', True))
     return {
-        'trial_mode': is_trial,
-        'general_enabled': general_enabled,
         'sales_enabled': sales_enabled,
     }
 
@@ -164,8 +157,6 @@ def _execute_decision(
         executor = BlockExecutor()
     elif route == RouteType.ESCALATE_TO_HUMAN:
         executor = EscalateExecutor()
-    elif route == RouteType.ROUTE_TO_GENERAL_AGENT:
-        executor = RouteToAgentExecutor('general')
     elif route == RouteType.ROUTE_TO_SALES_AGENT:
         executor = RouteToAgentExecutor('sales')
     elif route == RouteType.ROUTE_TO_MARKETING_AGENT:

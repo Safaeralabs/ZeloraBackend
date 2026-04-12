@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('conversations', '0002_conversation_fields'),
+        ('conversations', '0001_initial'),
     ]
 
     operations = [

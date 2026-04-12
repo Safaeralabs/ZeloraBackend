@@ -51,23 +51,22 @@ class AIRouterServiceTests(SimpleTestCase):
         self.assertEqual(decision.post_actions[0]['action_type'], 'create_task')
         self.assertEqual(decision.post_actions[0]['target'], 'operations_agent')
 
-    def test_routes_buy_intent_to_general_agent_when_sales_is_disabled(self) -> None:
+    def test_routes_buy_intent_to_direct_reply_when_sales_is_disabled(self) -> None:
         decision = self.router.route(
             {
                 **self.base_event,
                 'message_text': 'Quiero comprar el producto',
                 'metadata': {
                     'agent_capabilities': {
-                        'general_enabled': True,
                         'sales_enabled': False,
                     },
                 },
             }
         )
-        self.assertEqual(decision.route.value, 'route_to_general_agent')
-        self.assertEqual(decision.agent, 'general_agent')
+        self.assertEqual(decision.route.value, 'direct_ai_reply')
+        self.assertIsNone(decision.agent)
 
-    def test_routes_unknown_app_message_to_general_agent_when_both_are_active(self) -> None:
+    def test_routes_unknown_app_message_to_sales_agent_when_active(self) -> None:
         decision = self.router.route(
             {
                 **self.base_event,
@@ -75,14 +74,13 @@ class AIRouterServiceTests(SimpleTestCase):
                 'message_text': 'Hola',
                 'metadata': {
                     'agent_capabilities': {
-                        'general_enabled': True,
                         'sales_enabled': True,
                     },
                 },
             }
         )
-        self.assertEqual(decision.route.value, 'route_to_general_agent')
-        self.assertEqual(decision.agent, 'general_agent')
+        self.assertEqual(decision.route.value, 'route_to_sales_agent')
+        self.assertEqual(decision.agent, 'sales_agent')
 
     def test_keeps_sales_agent_active_for_follow_up_general_faq(self) -> None:
         decision = self.router.route(
@@ -91,7 +89,6 @@ class AIRouterServiceTests(SimpleTestCase):
                 'message_text': 'Y como funciona eso?',
                 'metadata': {
                     'agent_capabilities': {
-                        'general_enabled': True,
                         'sales_enabled': True,
                     },
                     'active_ai_agent': 'sales',

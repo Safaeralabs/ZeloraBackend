@@ -160,6 +160,7 @@ def score_and_rank_products(
     promotions: list[dict],
     message_text: str,
     organization_id: str = None,
+    prior_product_ids: list[str] | None = None,
 ) -> list[dict]:
     """
     Score and rank products using composite formula.
@@ -189,8 +190,8 @@ def score_and_rank_products(
     try:
         occasion_hints = _extract_occasion_hints(message_text)
 
-        # P3.2: Build set of product IDs already shown for graph boost
-        already_shown_ids = set(str(p.get('id', '')) for p in products[:2] if p.get('id'))
+        # P3.2: Product IDs already shown in previous turns (preferred source for graph boost).
+        already_shown_ids = set(str(pid) for pid in (prior_product_ids or []) if pid)
 
         scored_products = []
         for product in products:
@@ -206,6 +207,7 @@ def score_and_rank_products(
 
             # Composite score
             total_score = 0.45 * aes + 0.30 * intent + 0.15 * comm + 0.10 * pop
+            graph_bonus = 0.0
 
             # P3.2: Check ProductRelation graph for cross-sell/bundle opportunities
             product_id = str(product.get('id', ''))
@@ -220,6 +222,7 @@ def score_and_rank_products(
                         )
                         if product_id in related:
                             total_score += 0.1  # Cross-sell/bundle bonus
+                            graph_bonus = 0.1
                             break
 
             # Augment product dict with scoring info
@@ -230,7 +233,7 @@ def score_and_rank_products(
                 'intent_fit': round(intent, 3),
                 'commercial_fit': round(comm, 3),
                 'popularity': round(pop, 3),
-                'graph_bonus': 0.1 if total_score > 0.5 else 0.0,  # P3.2
+                'graph_bonus': graph_bonus,  # P3.2
             }
 
             scored_products.append((product_copy, total_score))

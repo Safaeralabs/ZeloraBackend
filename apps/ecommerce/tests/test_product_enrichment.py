@@ -106,6 +106,7 @@ class TestProductEnrichment(TestCase):
         assert serialized['target_audience'] == 'men'
         assert 'casual' in serialized['occasion']
         assert serialized['is_bestseller'] is False
+        assert serialized['popularity_score'] == 3.2
 
 
 class TestPromotion(TestCase):
@@ -211,6 +212,32 @@ class TestPromotion(TestCase):
         promos = get_active_promotions(self.org)
         assert len(promos) > 0
         assert any(p['title'] == 'Test Promo' for p in promos)
+
+    def test_get_active_promotions_includes_product_scope_fields(self):
+        """Promotion payload should include category and product_ids for scoring."""
+        product = Product.objects.create(
+            organization=self.org,
+            title='Scoped Product',
+            category='Clothing',
+            status='active',
+            is_active=True,
+        )
+        ProductVariant.objects.create(product=product, sku='scoped-1', name='Scoped Variant', price=100)
+        promo = Promotion.objects.create(
+            organization=self.org,
+            title='Scoped Promo',
+            discount_type='percentage',
+            discount_value=15,
+            applies_to='specific_products',
+            category='Clothing',
+            is_active=True,
+        )
+        promo.products.set([product])
+
+        promos = get_active_promotions(self.org, product=product)
+        scoped = next(p for p in promos if p['title'] == 'Scoped Promo')
+        assert scoped['category'] == 'Clothing'
+        assert str(product.id) in scoped['product_ids']
 
 
 class TestProductRelation(TestCase):

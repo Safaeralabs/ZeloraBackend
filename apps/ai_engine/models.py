@@ -167,6 +167,10 @@ class SalesAgentLog(models.Model):
     context_used = models.JSONField(default=dict)
     # P2.4: Evaluation and channel tracking
     evaluation_score = models.FloatField(null=True, blank=True)  # 0-1, from evaluator
+    evaluation_coherencia = models.FloatField(null=True, blank=True)  # 0-1
+    evaluation_naturalidad = models.FloatField(null=True, blank=True)  # 0-1
+    evaluation_brand_fit = models.FloatField(null=True, blank=True)  # 0-1
+    evaluation_cta_quality = models.FloatField(null=True, blank=True)  # 0-1
     evaluation_flags = models.JSONField(default=list, blank=True)  # list of flags from evaluator
     channel = models.CharField(max_length=30, blank=True)  # whatsapp, web, instagram, email, telegram
     created_at = models.DateTimeField(auto_now_add=True)

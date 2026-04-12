@@ -42,7 +42,7 @@ def _enforce_reply_scope(*, message_text: str, reply_text: str, sales_ctx: Sales
     if any(pattern in reply.lower() for pattern in suspicious_general_patterns):
         if not any(term in reply.lower() for term in scope_terms):
             brand_name = sales_ctx.brand.brand_name or sales_ctx.business.org_name or 'la organizacion'
-            what_you_sell = sales_ctx.business.what_you_sell or 'sus servicios y procesos'
+            what_you_sell = _normalize_offer_text(sales_ctx.business.what_you_sell) or 'sus servicios y procesos'
             safe_reply = (
                 f'Solo te puedo ayudar con {brand_name}, {what_you_sell}, politicas, requisitos y atencion de la organizacion. '
                 'Si quieres, dime tu duda concreta y te ayudo dentro de ese contexto.'
@@ -122,7 +122,7 @@ def _guard_out_of_scope_request(message_text: str, sales_ctx: SalesContext) -> d
         return None
 
     brand_name = sales_ctx.brand.brand_name or sales_ctx.business.org_name or 'la marca'
-    what_you_sell = sales_ctx.business.what_you_sell or 'nuestros productos'
+    what_you_sell = _normalize_offer_text(sales_ctx.business.what_you_sell) or 'nuestros productos'
     reply = (
         f'Aqui solo te puedo ayudar con {brand_name}, {what_you_sell}, disponibilidad, politicas y compra por chat. '
         'Si quieres, te recomiendo una opcion o resolvemos una duda del producto.'
@@ -164,7 +164,7 @@ def _guard_general_scope_request(message_text: str, sales_ctx: SalesContext) -> 
     )
     if asks_for_general_info and not any(term in text for term in business_anchor_terms):
         brand_name = sales_ctx.brand.brand_name or sales_ctx.business.org_name or 'la marca'
-        what_you_sell = sales_ctx.business.what_you_sell or 'nuestros productos y servicios'
+        what_you_sell = _normalize_offer_text(sales_ctx.business.what_you_sell) or 'nuestros productos y servicios'
         reply = (
             f'Solo te puedo ayudar con temas de {brand_name}: {what_you_sell}, procesos, politicas y atencion de la organizacion. '
             'Si quieres, dime tu duda concreta y te ayudo dentro de ese contexto.'
@@ -223,7 +223,7 @@ def _guard_out_of_scope_brand_query(message_text: str, sales_ctx: SalesContext) 
         return None
 
     brand_name = sales_ctx.brand.brand_name or sales_ctx.business.org_name or 'la marca'
-    what_you_sell = sales_ctx.business.what_you_sell or 'nuestros productos'
+    what_you_sell = _normalize_offer_text(sales_ctx.business.what_you_sell) or 'nuestros productos'
     reply = (
         f'Solo te puedo ayudar con informacion de {brand_name} y de {what_you_sell}. '
         f'Si quieres, te cuento sobre un producto, disponibilidad o cual te conviene mas dentro de {brand_name}.'
@@ -257,3 +257,23 @@ def _build_scope_terms(sales_ctx: SalesContext) -> set[str]:
                 if len(chunk.strip()) >= 4:
                     allowed_terms.add(chunk.strip())
     return allowed_terms
+
+
+def _normalize_offer_text(raw: str) -> str:
+    cleaned = ' '.join((raw or '').split()).strip(' .,:;')
+    if not cleaned:
+        return ''
+
+    lowered = cleaned.lower()
+    prefixes = (
+        'vendemos ', 'venden ', 'vendo ',
+        'ofrecemos ', 'ofrecen ', 'ofrezco ',
+        'comercializamos ', 'comercializan ',
+        'somos ', 'nos dedicamos a ',
+    )
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip(' .,:;')
+            break
+
+    return cleaned
