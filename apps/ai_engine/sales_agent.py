@@ -50,6 +50,11 @@ class SalesAgent:
 
         text = message_text.lower()
         sales_ctx = _load_sales_context(organization)
+
+        # P3.1: Load contact memory for cross-conversation context
+        contact = getattr(conversation, 'contact', None)
+        contact_memory = _load_contact_memory(contact) if contact else {}
+
         if sales_ctx.agent_preferences.get('enabled', True) is False:
             return SalesAgentResult(
                 stage=STAGE_DISCOVERING,
@@ -188,6 +193,7 @@ class SalesAgent:
             router_decision=router_decision,
             conversation=conversation,
             channel=_channel,  # P2.1 & P2.3: pass channel for adaptation
+            contact_memory=contact_memory,  # P3.1: pass contact memory for context
         )
         reply_text = _enforce_reply_scope(
             message_text=message_text,
@@ -206,6 +212,9 @@ class SalesAgent:
 
         if sales_ctx.agent_preferences.get('followup_mode', 'suave') != 'apagado' and stage in (STAGE_FOLLOW_UP_NEEDED, STAGE_CONSIDERING):
             _create_followup_task(conversation, organization, stage, message_text, buyer)
+
+        # P3.1: Update contact memory with this turn's data
+        _update_contact_memory(contact, organization, buyer, products, stage)
 
         return SalesAgentResult(
             stage=stage,
@@ -442,3 +451,94 @@ def _build_actions(
     if buyer.quantity == 'bulk' or biz_ctx.min_order_units > 1:
         actions.append(SalesAction('respect_business_rules', {'min_order_units': biz_ctx.min_order_units}))
     return actions
+
+
+def _load_contact_memory(contact) -> dict[str, Any]:
+    """
+    P3.1: Load persistent memory for a contact from previous conversations.
+    Returns a dict summarizing the contact's preferences, budget, style.
+    """
+    if not contact:
+        return {}
+
+    try:
+        from .models import ContactMemory
+
+        memory = ContactMemory.objects.filter(contact=contact).first()
+        if not memory:
+            return {}
+
+        return {
+            'has_prior_interactions': memory.conversation_count > 0,
+            'conversation_count': memory.conversation_count,
+            'inferred_budget_min': float(memory.inferred_budget_min) if memory.inferred_budget_min else None,
+            'inferred_budget_max': float(memory.inferred_budget_max) if memory.inferred_budget_max else None,
+            'style_cues': memory.style_cues,
+            'occasion_hints': memory.occasion_hints,
+            'category_preferences': memory.category_preferences,
+            'last_products_shown': memory.last_products_shown[-5:] if memory.last_products_shown else [],
+            'last_intent': memory.last_intent,
+            'last_objection': memory.last_objection,
+            'converted': memory.converted,
+        }
+    except Exception as exc:
+        logger.warning('load_contact_memory_error', error=str(exc))
+        return {}
+
+
+def _update_contact_memory(contact, organization, buyer: BuyerProfile, products: list[dict], stage: str) -> None:
+    """
+    P3.1: Update persistent memory for a contact after a conversation turn.
+    Captures budget hints, style cues, products shown, and intent.
+    """
+    if not contact:
+        return
+
+    try:
+        from .models import ContactMemory
+        from django.utils import timezone
+
+        memory, created = ContactMemory.objects.get_or_create(
+            organization=organization,
+            contact=contact,
+        )
+
+        # Update intent and objection
+        memory.last_intent = stage
+        if buyer.objection:
+            memory.last_objection = buyer.objection
+
+        # Track products shown (keep last 5)
+        product_ids = [p['id'] for p in products[:3]]
+        if product_ids:
+            existing = memory.last_products_shown or []
+            memory.last_products_shown = (product_ids + existing)[:5]
+            memory.total_products_viewed += len(product_ids)
+
+        # Update style cues from buyer profile
+        memory.style_cues = {
+            'priority': buyer.priority,
+            'quantity': buyer.quantity,
+            'urgency': buyer.urgency,
+            'style': buyer.style,
+        }
+
+        # Track categories (simplified)
+        if products:
+            cats = list(set(p.get('category', '') for p in products if p.get('category')))
+            if cats:
+                existing = memory.category_preferences or []
+                memory.category_preferences = list(set(cats + existing))[:10]
+
+        # Update occasion hints from message (naive: just flag if found)
+        # (More sophisticated extraction would happen during extraction)
+        if hasattr(buyer, '_occasion_hints'):
+            memory.occasion_hints = list(set(buyer._occasion_hints + (memory.occasion_hints or [])))[:10]
+
+        memory.conversation_count += 1
+        memory.last_conversation_at = timezone.now()
+
+        memory.save()
+
+    except Exception as exc:
+        logger.warning('update_contact_memory_error', error=str(exc))

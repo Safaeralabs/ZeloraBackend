@@ -35,6 +35,7 @@ def _llm_reply(
     router_decision,
     settings,
     conversation,
+    contact_memory: dict[str, Any] | None = None,
 ) -> str | None:
     try:
         import openai
@@ -60,6 +61,7 @@ def _llm_reply(
                     promotions=promotions,
                     sales_ctx=sales_ctx,
                     conversation=conversation,
+                    contact_memory=contact_memory,
                 )},
                 *chat_history,
                 {'role': 'user', 'content': message_text},
@@ -490,6 +492,7 @@ def _build_context_block(
     promotions: list[dict[str, Any]],
     sales_ctx: SalesContext,
     conversation,
+    contact_memory: dict[str, Any] | None = None,
 ) -> str:
     business = sales_ctx.business
     brand = sales_ctx.brand
@@ -560,6 +563,7 @@ def _build_context_block(
         f'Regla entrega: {rules.delivery_promise_rule or "no definida"}\n'
         f'Regla devoluciones: {rules.return_policy_summary or "no definida"}\n'
         f'Comprador: prioridad={buyer.priority}, urgencia={buyer.urgency}, estilo={buyer.style}, objecion={buyer.objection or "ninguna"}, etapa={stage}\n'
+        + (f'P3.1 Contacto Memory: conversaciones_previas={contact_memory.get("conversation_count", 0)}, presupuesto_inferido={contact_memory.get("inferred_budget_min")}-{contact_memory.get("inferred_budget_max")}, ultimas_ocasiones={contact_memory.get("occasion_hints", [])}, intento_previo={contact_memory.get("last_intent", "ninguno")}, convertido={contact_memory.get("converted", False)}\n' if contact_memory and contact_memory.get('has_prior_interactions') else '')
         f'Regla de seguimiento: modo={prefs.get("followup_mode", "suave")} | max_followups={prefs.get("max_followups", 1)} | autonomia={prefs.get("autonomy_level", "semi_autonomo")} | recommendation_depth={prefs.get("recommendation_depth", 2)} | escalado={prefs.get("handoff_mode", "balanceado")}.\n'
         f'Marca: tono={brand.tone_of_voice}, formalidad={brand.formality_level}, personalidad={brand.brand_personality or "n/d"}, propuesta={brand.value_proposition or "n/d"}\n'
         f'Diferenciales marca: {", ".join(brand.key_differentiators[:4]) or "ninguno"}\n'
@@ -1010,6 +1014,7 @@ def _generate_reply(
     router_decision,
     conversation,
     channel: str = 'web',
+    contact_memory: dict | None = None,
 ) -> str:
     """
     P2.1: Orquestador de 2-step generation.
@@ -1019,6 +1024,7 @@ def _generate_reply(
     Args:
         All the usual parameters from the original _generate_reply
         channel: 'whatsapp', 'instagram', 'web', 'email', 'telegram' (default: 'web')
+        contact_memory: P3.1 persistent memory for this contact (dict)
 
     Returns:
         Final reply text, ready to send
@@ -1044,6 +1050,7 @@ def _generate_reply(
                 router_decision=router_decision,
                 settings=django_settings,
                 conversation=conversation,
+                contact_memory=contact_memory,  # P3.1: pass contact memory for context
             )
 
             if brain_reply:

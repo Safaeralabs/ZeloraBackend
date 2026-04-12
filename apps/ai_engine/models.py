@@ -287,3 +287,74 @@ class OpenAIUsageLog(models.Model):
             models.Index(fields=['organization', 'created_at']),
             models.Index(fields=['organization', 'feature', 'created_at']),
         ]
+
+
+class ContactMemory(models.Model):
+    """
+    P3.1: Persistent memory per contact for cross-conversation context.
+
+    Updated at the end of every SalesAgent.run() with inferred preferences,
+    budget, style cues, and products shown. Injected into the next conversation
+    with the same contact.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        'accounts.Organization', on_delete=models.CASCADE, related_name='contact_memories'
+    )
+    contact = models.OneToOneField(
+        'accounts.Contact', on_delete=models.CASCADE, related_name='memory'
+    )
+
+    # Inferred preferences (updated by Sales Agent)
+    inferred_budget_min = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text='Min budget inferred from conversation (e.g., "presupuesto 50k")'
+    )
+    inferred_budget_max = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text='Max budget inferred'
+    )
+    style_cues = models.JSONField(
+        default=dict, blank=True,
+        help_text='Inferred style patterns: {"tone": "casual", "urgency": "high", "decision_speed": "quick"}'
+    )
+    occasion_hints = models.JSONField(
+        default=list, blank=True,
+        help_text='e.g., ["boda", "trabajo", "casual"]'
+    )
+    category_preferences = models.JSONField(
+        default=list, blank=True,
+        help_text='Categories shown/mentioned: ["clothing", "electronics"]'
+    )
+    last_products_shown = models.JSONField(
+        default=list, blank=True,
+        help_text='Last 5 product IDs shown to this contact'
+    )
+    last_intent = models.CharField(
+        max_length=50, blank=True,
+        help_text='Last detected intent: discovering, considering, intent_to_buy, checkout_blocked, etc.'
+    )
+    last_objection = models.CharField(
+        max_length=50, blank=True,
+        help_text='Last detected objection: price, shipping, availability, trust, quality, urgency'
+    )
+
+    # Metadata for tracking
+    conversation_count = models.PositiveIntegerField(default=0)
+    last_conversation_at = models.DateTimeField(null=True, blank=True)
+    total_products_viewed = models.PositiveIntegerField(default=0)
+    converted = models.BooleanField(default=False, help_text='Has this contact purchased?')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'contact_memories'
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['organization', 'contact']),
+            models.Index(fields=['organization', 'updated_at']),
+        ]
+
+    def __str__(self):
+        return f'Memory for {self.contact.full_name} (Budget: {self.inferred_budget_min}-{self.inferred_budget_max})'
