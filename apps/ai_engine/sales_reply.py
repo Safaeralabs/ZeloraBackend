@@ -23,6 +23,66 @@ from .sales_models import (
 
 logger = structlog.get_logger(__name__)
 
+
+def _retrieve_conversation_examples(
+    message_text: str,
+    stage: str,
+    organization_id: str,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """
+    L4 — Retrieve similar conversation_example candidates as few-shot learning.
+    Embeds the message, finds top-K examples by cosine similarity > 0.75.
+    Returns list of {user_message, agent_reply, stage}.
+    """
+    try:
+        from apps.analytics.models import LearningCandidate
+        from apps.ai_engine.sales_kb import _embed_query, _cosine_similarity
+
+        # Get approved conversation_example candidates
+        candidates = (
+            LearningCandidate.objects
+            .filter(
+                organization_id=organization_id,
+                kind='conversation_example',
+                status='approved',
+            )
+            .values('id', 'source_question', 'proposed_answer', 'metadata')
+        )
+        if not candidates.exists():
+            return []
+
+        # Embed the query message
+        query_embedding = _embed_query(message_text)
+        if not query_embedding:
+            return []
+
+        # Score each candidate
+        scored = []
+        for cand in candidates:
+            example_embedding = cand.get('metadata', {}).get('embedding')
+            if not example_embedding:
+                continue
+
+            similarity = _cosine_similarity(query_embedding, example_embedding)
+            if similarity > 0.75:
+                scored.append({
+                    'similarity': similarity,
+                    'user_message': cand.get('source_question', '')[:200],
+                    'agent_reply': cand.get('proposed_answer', '')[:200],
+                    'stage': cand.get('metadata', {}).get('stage', 'discovering'),
+                    'channel': cand.get('metadata', {}).get('channel', 'web'),
+                })
+
+        # Sort by similarity descending, return top K
+        scored.sort(key=lambda x: x['similarity'], reverse=True)
+        return scored[:limit]
+
+    except Exception as exc:
+        logger.warning('conversation_examples_retrieval_error', error=str(exc))
+        return []
+
+
 def _llm_reply(
     *,
     message_text: str,
@@ -48,6 +108,23 @@ def _llm_reply(
         import time as _time
         is_first = _conversation_user_message_count(conversation) <= 1
         chat_history = _build_chat_history_messages(conversation)
+
+        # L4 — Retrieve conversation examples as few-shot learning
+        examples = _retrieve_conversation_examples(
+            message_text=message_text,
+            stage=stage,
+            organization_id=str(sales_ctx.organization.id),
+            limit=3,
+        )
+        examples_block = ''
+        if examples:
+            examples_lines = []
+            for ex in examples:
+                examples_lines.append(
+                    f"  Cliente: {ex['user_message']}\n  Agente: {ex['agent_reply']}"
+                )
+            examples_block = '\n\nL4 EJEMPLOS DE CONVERSACIONES EXITOSAS:\n' + '\n\n'.join(examples_lines)
+
         t0 = _time.monotonic()
         completion = client.chat.completions.create(
             model=model,
@@ -62,7 +139,7 @@ def _llm_reply(
                     sales_ctx=sales_ctx,
                     conversation=conversation,
                     contact_memory=contact_memory,
-                )},
+                ) + examples_block},
                 *chat_history,
                 {'role': 'user', 'content': message_text},
             ],

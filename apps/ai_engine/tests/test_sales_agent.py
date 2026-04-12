@@ -30,8 +30,7 @@ from apps.ai_engine.sales_agent import (
     _create_followup_task,
     _detect_topics,
     _detect_close_signals,
-    _handle_affiliation_qualification_flow,
-    _handle_comfaguajira_service_flow,
+    _extract_kb_policy_overrides,
     _heuristic_reply,
     _humanize_sales_reply,
     _strengthen_closing_reply,
@@ -373,7 +372,7 @@ class SalesAgentPromptContextTests(SimpleTestCase):
         self.assertIn('Compradores ideales', prompt)
         self.assertIn('Regla de descuentos', prompt)
         self.assertIn('Frases a evitar', prompt)
-        self.assertIn('si hay conflicto entre la knowledge base libre y las reglas comerciales estructuradas', prompt.lower())
+        self.assertIn('si hay conflicto entre una politica publicada en knowledge base y un campo estructurado legacy', prompt.lower())
 
     def test_context_block_includes_operational_brand_memory(self):
         conversation = MagicMock()
@@ -426,8 +425,36 @@ class SalesAgentPromptContextTests(SimpleTestCase):
         self.assertIn('Buyer model', block)
         self.assertIn('Frases a evitar', block)
         self.assertIn('Regla devoluciones', block)
-        self.assertIn('Reglas estructuradas prioritarias', block)
+        self.assertIn('Politicas operativas priorizadas', block)
         self.assertIn('metodos_de_pago', block)
+
+
+class SalesAgentKbPolicyPriorityTests(SimpleTestCase):
+    @patch('apps.knowledge_base.models.KBArticle.objects.filter')
+    def test_extract_kb_policy_overrides_prefers_policy_templates(self, mock_filter):
+        shipping_article = MagicMock(
+            title='Politica de envios',
+            category='Politicas comerciales',
+            tags=['shipping', 'policy'],
+            content='Cobertura: Colombia\nTiempos estimados: 2 a 5 dias habiles\nCondiciones importantes: no prometer fecha exacta sin validar',
+        )
+        restrictions_article = MagicMock(
+            title='Claims y promesas prohibidas',
+            category='Guardrails comerciales',
+            tags=['guardrails', 'policy'],
+            content='Claims prohibidos: garantizado para todos, entrega asegurada hoy\nPromesas prohibidas: apartar sin pago, descuento manual',
+        )
+        ordered = MagicMock()
+        ordered.__getitem__.return_value = [shipping_article, restrictions_article]
+        mock_filter.return_value.only.return_value.order_by.return_value = ordered
+
+        overrides = _extract_kb_policy_overrides(MagicMock())
+
+        self.assertEqual(overrides['shipping_coverage'], 'Colombia')
+        self.assertEqual(overrides['shipping_avg_days'], '2 a 5 dias habiles')
+        self.assertEqual(overrides['delivery_promise_rule'], 'no prometer fecha exacta sin validar')
+        self.assertIn('garantizado para todos', overrides['forbidden_claims'])
+        self.assertIn('descuento manual', overrides['forbidden_promises'])
 
 
 class SalesAgentBrandScopeTests(SimpleTestCase):
@@ -543,151 +570,3 @@ class SalesAgentBrandScopeTests(SimpleTestCase):
         self.assertTrue(result.context_used.get('out_of_scope'))
         self.assertEqual(result.context_used.get('out_of_scope_kind'), 'unrelated_topic')
 
-
-class SalesAgentStructuredFlowTests(SimpleTestCase):
-    def _comfaguajira_context(self):
-        return SalesContext(
-            business=BusinessContext(
-                org_name='Comfaguajira',
-                org_slug='comfaguajira',
-                what_you_sell='Subsidios, creditos, educacion y servicios para afiliados',
-            ),
-            brand=BrandProfile(
-                brand_name='Comfaguajira',
-                tone_of_voice='Cercano',
-            ),
-        )
-
-    def test_flow_starts_for_comfaguajira_service_interest(self):
-        conversation = MagicMock()
-        conversation.metadata = {}
-        conversation.contact = None
-
-        result = _handle_affiliation_qualification_flow(
-            message_text='Quiero saber el precio del teatro',
-            conversation=conversation,
-            sales_ctx=self._comfaguajira_context(),
-        )
-
-        self.assertIsNotNone(result)
-        self.assertEqual(result.decision, 'qualify')
-        self.assertIn('eres afiliado', result.reply_text.lower())
-        self.assertEqual(conversation.metadata['active_flow']['step'], 'ask_affiliation')
-
-    def test_flow_moves_to_category_when_user_is_affiliated(self):
-        conversation = MagicMock()
-        conversation.metadata = {
-            'active_flow': {
-                'name': 'comfaguajira_affiliation',
-                'step': 'ask_affiliation',
-                'status': 'active',
-                'data': {},
-            },
-            'qualification': {},
-        }
-        conversation.contact = None
-
-        result = _handle_affiliation_qualification_flow(
-            message_text='Soy afiliado',
-            conversation=conversation,
-            sales_ctx=self._comfaguajira_context(),
-        )
-
-        self.assertIsNotNone(result)
-        self.assertIn('categoria es a, b o c', result.reply_text.lower())
-        self.assertEqual(conversation.metadata['active_flow']['step'], 'ask_category')
-
-    def test_flow_completes_for_particular(self):
-        conversation = MagicMock()
-        conversation.metadata = {
-            'active_flow': {
-                'name': 'comfaguajira_affiliation',
-                'step': 'ask_affiliation',
-                'status': 'active',
-                'data': {},
-            },
-            'qualification': {},
-        }
-        conversation.contact = None
-
-        result = _handle_affiliation_qualification_flow(
-            message_text='Soy particular',
-            conversation=conversation,
-            sales_ctx=self._comfaguajira_context(),
-        )
-
-        self.assertIsNotNone(result)
-        self.assertEqual(conversation.metadata['qualification']['affiliate_status'], 'particular')
-        self.assertNotIn('active_flow', conversation.metadata)
-
-    def test_affiliation_flow_hands_over_to_theater_flow(self):
-        conversation = MagicMock()
-        conversation.metadata = {
-            'active_flow': {
-                'name': 'comfaguajira_affiliation',
-                'step': 'ask_category',
-                'status': 'active',
-                'data': {'pending_service': 'theater'},
-            },
-            'qualification': {'affiliate_status': 'afiliado'},
-        }
-        conversation.contact = None
-
-        result = _handle_affiliation_qualification_flow(
-            message_text='Categoria B',
-            conversation=conversation,
-            sales_ctx=self._comfaguajira_context(),
-        )
-
-        self.assertIsNotNone(result)
-        self.assertEqual(conversation.metadata['active_flow']['name'], 'comfaguajira_theater_booking')
-        self.assertEqual(conversation.metadata['active_flow']['step'], 'ask_event_type')
-        self.assertIn('tipo de evento', result.reply_text.lower())
-
-    def test_theater_flow_completes_with_quote(self):
-        conversation = MagicMock()
-        conversation.metadata = {
-            'active_flow': {
-                'name': 'comfaguajira_theater_booking',
-                'step': 'ask_duration',
-                'status': 'active',
-                'data': {'event_type': 'cultural', 'schedule': 'diurno'},
-            },
-            'qualification': {'affiliate_status': 'afiliado', 'affiliate_category': 'B'},
-        }
-        conversation.contact = None
-
-        result = _handle_comfaguajira_service_flow(
-            message_text='Lo necesito 4 horas',
-            conversation=conversation,
-            sales_ctx=self._comfaguajira_context(),
-        )
-
-        self.assertIsNotNone(result)
-        self.assertNotIn('active_flow', conversation.metadata)
-        self.assertIn('50% de anticipo', result.reply_text.lower())
-        self.assertIn('$1,057,400', result.reply_text)
-
-    def test_nutrition_flow_uses_affiliate_category_for_subsidy(self):
-        conversation = MagicMock()
-        conversation.metadata = {
-            'active_flow': {
-                'name': 'comfaguajira_nutrition_quote',
-                'step': 'ask_interest',
-                'status': 'active',
-                'data': {'child_age_months': 24},
-            },
-            'qualification': {'affiliate_status': 'afiliado', 'affiliate_category': 'A'},
-        }
-        conversation.contact = None
-
-        result = _handle_comfaguajira_service_flow(
-            message_text='Consulta y formula',
-            conversation=conversation,
-            sales_ctx=self._comfaguajira_context(),
-        )
-
-        self.assertIsNotNone(result)
-        self.assertNotIn('active_flow', conversation.metadata)
-        self.assertIn('$13,000', result.reply_text)
-        self.assertIn('75%', result.reply_text)

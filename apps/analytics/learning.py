@@ -91,6 +91,48 @@ def _apply_style_to_channel_config(candidate: LearningCandidate) -> None:
         pass  # Non-critical
 
 
+def _detect_conflicting_articles(org, candidate_content: str, candidate_title: str, limit: int = 3) -> list[dict]:
+    """
+    L7 — Detect potentially conflicting KB articles by semantic similarity.
+    Returns list of conflicts with similarity score and content snippets.
+    """
+    from apps.knowledge_base.models import KBArticle
+    from apps.ai_engine.sales_kb import _cosine_similarity, _embed_query
+
+    try:
+        # Search for articles with similar purpose
+        articles = (
+            KBArticle.objects
+            .filter(organization=org, status='published', is_active=True)
+            .values('id', 'title', 'content', 'embedding_vector')
+            .order_by('-updated_at')[:50]
+        )
+
+        # Embed candidate content
+        candidate_embedding = _embed_query(candidate_content)
+        if not candidate_embedding:
+            return []
+
+        conflicts = []
+        for article in articles:
+            article_embedding = article.get('embedding_vector')
+            if not article_embedding:
+                continue
+
+            similarity = _cosine_similarity(candidate_embedding, article_embedding)
+            if similarity > 0.80:  # High similarity threshold for conflict
+                conflicts.append({
+                    'article_id': article['id'],
+                    'article_title': article['title'],
+                    'similarity': round(similarity, 2),
+                    'content_snippet': article['content'][:200],
+                })
+
+        return sorted(conflicts, key=lambda x: x['similarity'], reverse=True)[:limit]
+    except Exception:
+        return []
+
+
 def approve_learning_candidate(*, candidate: LearningCandidate, author=None) -> KBArticle:
     meta = candidate.metadata or {}
     is_llm = meta.get('source') == 'llm'
@@ -132,9 +174,18 @@ def approve_learning_candidate(*, candidate: LearningCandidate, author=None) -> 
         tags = sorted(set([candidate.kind, 'auto_learning', 'conversation_memory']))
         embedding = []
 
+    # L7 — Detect conflicts before creating
+    article_title = candidate.title or _title_from_question(candidate.source_question)
+    conflicts = _detect_conflicting_articles(candidate.organization, content, article_title)
+    if conflicts:
+        # Store conflicts in metadata for audit
+        meta['conflicts'] = conflicts
+        candidate.metadata = meta
+        candidate.save(update_fields=['metadata'])
+
     article, created = KBArticle.objects.get_or_create(
         organization=candidate.organization,
-        title=candidate.title or _title_from_question(candidate.source_question),
+        title=article_title,
         defaults={
             'author': author,
             'content': content,

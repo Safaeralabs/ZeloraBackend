@@ -35,6 +35,7 @@ class MetricsSnapshot(models.Model):
 class LearningCandidate(models.Model):
     KIND_CHOICES = [
         ('faq', 'FAQ'),
+        ('conversation_example', 'Conversation example'),  # L3+L4: user message → successful agent reply
         ('winning_reply', 'Winning reply'),
         ('objection', 'Objection'),
         ('estilo_comunicacion', 'Estilo de comunicación'),

@@ -48,6 +48,20 @@ class Conversation(models.Model):
     intent = models.CharField(max_length=150, blank=True)
     sentimiento = models.CharField(max_length=20, choices=SENTIMENT_CHOICES, default='neutro')
 
+    # L5: Commercial outcome tracking for learning feedback
+    commercial_outcome = models.CharField(
+        max_length=20,
+        choices=[
+            ('browsing', 'Browsing only'),
+            ('abandoned', 'Abandoned'),
+            ('purchased', 'Purchased'),
+        ],
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Whether conversation resulted in a purchase order'
+    )
+
     # External reference (WhatsApp/Instagram thread ID)
     external_id = models.CharField(max_length=300, blank=True, db_index=True)
 

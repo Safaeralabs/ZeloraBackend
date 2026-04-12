@@ -150,6 +150,79 @@ def _sync_legacy_sales_fields(settings_payload: dict, sales_agent_profile: dict)
     return settings_payload
 
 
+def _merge_org_profile_block(existing: dict | None, patch: dict | None) -> dict:
+    existing = existing or {}
+    patch = patch or {}
+    return {
+        **existing,
+        **patch,
+        'brand': _merge_nested(existing.get('brand'), patch.get('brand')),
+    }
+
+
+def _merge_sales_agent_block(existing: dict | None, patch: dict | None) -> dict:
+    existing = existing or {}
+    patch = patch or {}
+    return {
+        **existing,
+        **patch,
+        'playbook': _merge_nested(existing.get('playbook'), patch.get('playbook')),
+        'buyer_model': _merge_nested(existing.get('buyer_model'), patch.get('buyer_model')),
+        'commerce_rules': _merge_nested(existing.get('commerce_rules'), patch.get('commerce_rules')),
+    }
+
+
+def _sync_legacy_org_profile_fields(settings_payload: dict, org_profile: dict) -> dict:
+    settings_payload['org_profile'] = org_profile
+    settings_payload['what_you_sell'] = org_profile.get('what_you_sell', '')
+    settings_payload['who_you_sell_to'] = org_profile.get('who_you_sell_to', '')
+    settings_payload['payment_methods'] = org_profile.get('payment_methods', []) or []
+    settings_payload['brand_profile'] = org_profile.get('brand', {}) or {}
+    return settings_payload
+
+
+def _sync_legacy_sales_fields_from_v2(settings_payload: dict, sales_agent: dict) -> dict:
+    ai_preferences = {**(settings_payload.get('ai_preferences') or {})}
+    existing_sales_ai = {**(ai_preferences.get('sales_agent') or {})}
+    sales_profile = {
+        'agent_persona': sales_agent.get('persona', ''),
+        'mission_statement': sales_agent.get('mission_statement', ''),
+        'greeting_message': sales_agent.get('greeting_message', ''),
+        'response_language': sales_agent.get('response_language', 'auto'),
+        'competitor_response': sales_agent.get('competitor_response', ''),
+        'shipping_policy': sales_agent.get('shipping_policy', ''),
+        'brand_profile': settings_payload.get('brand_profile', {}) or {},
+        'sales_playbook': sales_agent.get('playbook', {}) or {},
+        'buyer_model': sales_agent.get('buyer_model', {}) or {},
+        'commerce_rules': sales_agent.get('commerce_rules', {}) or {},
+    }
+    ai_preferences['sales_agent'] = {
+        **existing_sales_ai,
+        'enabled': sales_agent.get('enabled', True),
+        'model_name': sales_agent.get('model_name') or existing_sales_ai.get('model_name') or 'gpt-4.1-nano',
+        'autonomy_level': sales_agent.get('autonomy_level') or existing_sales_ai.get('autonomy_level') or 'semi_autonomo',
+        'followup_mode': sales_agent.get('followup_mode') or existing_sales_ai.get('followup_mode') or 'suave',
+        'max_followups': sales_agent.get('max_followups', existing_sales_ai.get('max_followups', 1)),
+        'recommendation_depth': sales_agent.get('recommendation_depth', existing_sales_ai.get('recommendation_depth', 2)),
+        'handoff_mode': sales_agent.get('handoff_mode') or existing_sales_ai.get('handoff_mode') or 'balanceado',
+        'max_response_length': sales_agent.get('max_response_length') or existing_sales_ai.get('max_response_length') or 'standard',
+    }
+    settings_payload['settings_version'] = 2
+    settings_payload['sales_agent'] = sales_agent
+    settings_payload['sales_agent_name'] = sales_agent.get('name') or settings_payload.get('sales_agent_name') or 'Sales Agent'
+    settings_payload['sales_agent_profile'] = sales_profile
+    settings_payload['sales_playbook'] = sales_profile.get('sales_playbook', {})
+    settings_payload['buyer_model'] = sales_profile.get('buyer_model', {})
+    settings_payload['commerce_rules'] = sales_profile.get('commerce_rules', {})
+    settings_payload['shipping_coverage'] = sales_agent.get('shipping_coverage', '')
+    settings_payload['shipping_avg_days'] = sales_agent.get('shipping_avg_days', '')
+    settings_payload['min_order_units'] = sales_agent.get('min_order_units', 1)
+    settings_payload['max_units_auto_approve'] = sales_agent.get('max_units_auto_approve', 10)
+    settings_payload['returns_window_days'] = sales_agent.get('returns_window_days', 15)
+    settings_payload['ai_preferences'] = ai_preferences
+    return settings_payload
+
+
 def _compute_activation_tasks(organization, settings_payload: dict) -> dict:
     from apps.channels_config.models import ChannelConfig
     from apps.knowledge_base.models import KBArticle, KBDocument
@@ -750,10 +823,13 @@ class OnboardingProfileView(generics.GenericAPIView):
         return config
 
     def get(self, request, *args, **kwargs):
+        from apps.channels_config.settings_schema import normalise_settings
+
         org = request.user.organization
         config = self._get_or_create_onboarding_config(org)
         settings_payload = {**(config.settings or {})}
         settings_payload['activation_tasks'] = _compute_activation_tasks(org, settings_payload)
+        settings_payload.update(normalise_settings(settings_payload))
         settings_payload['general_agent_name'] = settings_payload.get('general_agent_name') or 'General Agent'
         settings_payload['general_agent_profile'] = _hydrate_general_agent_profile(settings_payload)
         settings_payload['sales_agent_name'] = settings_payload.get('sales_agent_name') or 'Sales Agent'
@@ -767,6 +843,8 @@ class OnboardingProfileView(generics.GenericAPIView):
         return Response(self.get_serializer(payload).data)
 
     def patch(self, request, *args, **kwargs):
+        from apps.channels_config.settings_schema import normalise_settings
+
         if request.user.rol not in ('admin', 'supervisor'):
             return Response(
                 {'error': 'Only admins can update onboarding settings'},
@@ -794,6 +872,7 @@ class OnboardingProfileView(generics.GenericAPIView):
 
         settings_payload = {**(config.settings or {})}
         for key in [
+            'settings_version',
             'tax_id',
             'contact_email',
             'contact_phone',
@@ -826,6 +905,24 @@ class OnboardingProfileView(generics.GenericAPIView):
             if key in data:
                 settings_payload[key] = _merge_nested(settings_payload.get(key), data[key])
 
+        normalized_settings = normalise_settings(settings_payload)
+
+        if 'org_profile' in data:
+            next_org_profile = _merge_org_profile_block(normalized_settings.get('org_profile'), data['org_profile'])
+            settings_payload = _sync_legacy_org_profile_fields(settings_payload, next_org_profile)
+            settings_payload['settings_version'] = 2
+            normalized_settings['org_profile'] = next_org_profile
+
+        if 'sales_agent' in data:
+            next_sales_agent = _merge_sales_agent_block(normalized_settings.get('sales_agent'), data['sales_agent'])
+            settings_payload = _sync_legacy_sales_fields_from_v2(settings_payload, next_sales_agent)
+            settings_payload['settings_version'] = 2
+            normalized_settings['sales_agent'] = next_sales_agent
+
+        if 'ai_platform' in data:
+            settings_payload['ai_platform'] = _merge_nested(normalized_settings.get('ai_platform'), data['ai_platform'])
+            settings_payload['settings_version'] = 2
+
         if 'sales_agent_profile' in data:
             current_sales_agent_profile = _hydrate_sales_agent_profile(settings_payload)
             incoming_profile = data['sales_agent_profile'] or {}
@@ -851,6 +948,7 @@ class OnboardingProfileView(generics.GenericAPIView):
         settings_payload['general_agent_profile'] = _hydrate_general_agent_profile(settings_payload)
         settings_payload['sales_agent_name'] = settings_payload.get('sales_agent_name') or 'Sales Agent'
         settings_payload['sales_agent_profile'] = _hydrate_sales_agent_profile(settings_payload)
+        settings_payload.update(normalise_settings(settings_payload))
 
         settings_payload['activation_tasks'] = _compute_activation_tasks(org, settings_payload)
 

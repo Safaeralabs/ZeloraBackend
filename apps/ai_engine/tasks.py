@@ -551,6 +551,88 @@ def run_learning_engine(conversation_id: str) -> dict:
             if was_created:
                 style_created += 1
 
+    # ── L3+L4: Conversation examples extraction (human-resolved only) ─────────────
+    # Extract high-quality user → agent reply pairs for few-shot learning
+    # L5: Boost confidence if conversation resulted in purchase
+    examples_created = 0
+    commercial_outcome = getattr(conversation, 'commercial_outcome', None) or 'browsing'
+    base_example_confidence = {
+        'purchased': 0.92,    # L5: highest confidence for purchases
+        'abandoned': 0.70,    # Lower for abandoned conversations
+        'browsing': 0.82,     # Medium for browsing
+    }.get(commercial_outcome, 0.82)
+
+    if conversation_meta['resolution_source'] == 'humano':
+        # Only extract examples if human was involved in resolution
+        agent_messages = [m for m in messages if m.get('role') == 'agent' and m.get('content')]
+        if len(agent_messages) >= 1:
+            # Group messages into user-agent pairs
+            for i, msg in enumerate(messages):
+                if msg.get('role') == 'agent' and msg.get('content'):
+                    # Find preceding user message
+                    user_msg = None
+                    for j in range(i - 1, -1, -1):
+                        if messages[j].get('role') == 'user' and messages[j].get('content'):
+                            user_msg = messages[j].get('content', '')
+                            break
+
+                    if not user_msg:
+                        continue
+
+                    agent_reply = str(msg.get('content', '')).strip()
+                    if len(agent_reply) < 20 or len(user_msg) < 10:
+                        # Skip too short examples
+                        continue
+
+                    # Create fingerprint from agent reply
+                    fingerprint = hashlib.sha256(f'example|{agent_reply.lower()}'.encode()).hexdigest()
+
+                    # Generate embedding
+                    example_text = f'{user_msg}\n---\n{agent_reply}'
+                    embedding = _generate_embedding(example_text, org_id_str)
+
+                    # Determine stage from conversation intent or message context
+                    stage = 'discovering'  # default
+                    if conversation.intent:
+                        stage_hints = {
+                            'comprar': 'intent_to_buy',
+                            'precio': 'considering',
+                            'disponibilidad': 'considering',
+                            'promoción': 'discovering',
+                            'descripción': 'discovering',
+                        }
+                        for hint, stage_val in stage_hints.items():
+                            if hint in conversation.intent.lower():
+                                stage = stage_val
+                                break
+
+                    _, was_created = LearningCandidate.objects.get_or_create(
+                        organization=org,
+                        kind='conversation_example',
+                        fingerprint=fingerprint,
+                        defaults={
+                            'conversation': conversation,
+                            'title': f'Ejemplo: {user_msg[:60]}…',
+                            'source_question': user_msg[:500],
+                            'proposed_answer': agent_reply[:500],
+                            'confidence': base_example_confidence,  # L5: outcome-based confidence
+                            'evidence_count': 1,
+                            'status': 'pending',
+                            'metadata': {
+                                'source': 'conversation_example',
+                                'conversation_id': str(conversation_id),
+                                'embedding': embedding,
+                                'stage': stage,
+                                'channel': conversation.canal,
+                                'commercial_outcome': commercial_outcome,  # L5: track outcome
+                                **source_meta,
+                                **conversation_meta,
+                            },
+                        },
+                    )
+                    if was_created:
+                        examples_created += 1
+
     logger.info(
         'learning_engine_done',
         conversation_id=str(conversation_id),
@@ -560,6 +642,7 @@ def run_learning_engine(conversation_id: str) -> dict:
         candidates_updated=updated,
         candidates_deduped=deduped,
         style_patterns_created=style_created,
+        examples_created=examples_created,
     )
     # Mark conversation as processed so the sweep task skips it
     try:
@@ -570,7 +653,7 @@ def run_learning_engine(conversation_id: str) -> dict:
     except Exception:
         pass
 
-    return {'status': 'ok', 'extracted': len(learnings), 'created': created, 'updated': updated, 'deduped': deduped}  # noqa: RET504
+    return {'status': 'ok', 'extracted': len(learnings), 'created': created, 'updated': updated, 'deduped': deduped, 'examples_created': examples_created}  # noqa: RET504
 
 
 def synthesize_playbook_from_kb(org_id: str) -> dict:

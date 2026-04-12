@@ -55,7 +55,7 @@ class GeneralAgent:
                 context_used={'knowledge_found': len(general_ctx.knowledge_snippets)},
             )
 
-        if _is_out_of_scope(cleaned, general_ctx):
+        if _is_out_of_scope(cleaned, general_ctx, conversation=conversation):
             return GeneralAgentResult(
                 reply_text=_out_of_scope_reply(general_ctx),
                 intent='out_of_scope',
@@ -133,12 +133,20 @@ def _lookup_relevant_knowledge(*, organization, query: str, max_snippets: int = 
     return [f'{article.title}: {article.content[:320]}' for article in articles]
 
 
-def _is_out_of_scope(message_text: str, ctx: GeneralAgentContext) -> bool:
+def _is_out_of_scope(message_text: str, ctx: GeneralAgentContext, conversation=None) -> bool:
     text = ' '.join((message_text or '').lower().split())
     if not text:
         return False
 
     allowed_terms = _build_scope_terms(ctx)
+    # If prior conversation context is in-scope, augment allowed_terms with prior user message content
+    prior_texts = _get_recent_user_messages(conversation, limit=3)
+    for prior_msg in prior_texts:
+        prior_lower = ' '.join(prior_msg.lower().split())
+        for chunk in re.split(r'[^a-z0-9áéíóúñ]+', prior_lower):
+            if len(chunk.strip()) >= 4:
+                allowed_terms.add(chunk.strip())
+
     if _asks_about_other_entity(text, allowed_terms):
         return True
 
@@ -173,6 +181,18 @@ def _is_out_of_scope(message_text: str, ctx: GeneralAgentContext) -> bool:
         return True
 
     return False
+
+
+def _get_recent_user_messages(conversation, limit: int = 3) -> list[str]:
+    """Returns last N user message texts for scope context. Excludes the current message."""
+    if not conversation:
+        return []
+    try:
+        msgs = list(conversation.messages.filter(role='user').order_by('-timestamp')[:limit + 1])
+        # Skip the most recent (current) message, take the ones before it
+        return [' '.join((m.content or '').split()) for m in msgs[1:limit + 1] if m.content]
+    except Exception:
+        return []
 
 
 def _build_scope_terms(ctx: GeneralAgentContext) -> set[str]:

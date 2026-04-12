@@ -68,6 +68,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
 
 
 class OnboardingProfileSerializer(serializers.Serializer):
+    settings_version = serializers.IntegerField(required=False)
     organization_name = serializers.CharField(max_length=200)
     website = serializers.CharField(allow_blank=True, required=False)
     timezone = serializers.CharField(allow_blank=True, required=False)
@@ -79,6 +80,10 @@ class OnboardingProfileSerializer(serializers.Serializer):
         required=False,
     )
     payment_settings = serializers.JSONField(required=False)
+    org_profile = serializers.JSONField(required=False)
+    general_agent = serializers.JSONField(required=False)
+    sales_agent = serializers.JSONField(required=False)
+    ai_platform = serializers.JSONField(required=False)
     what_you_sell = serializers.CharField(allow_blank=True, required=False)
     who_you_sell_to = serializers.CharField(allow_blank=True, required=False)
     general_agent_name = serializers.CharField(allow_blank=True, required=False)
@@ -118,6 +123,7 @@ class OnboardingProfileSerializer(serializers.Serializer):
             return super().to_representation(instance)
 
         return {
+            'settings_version': instance.get('settings_version', 1),
             'organization_name': instance.get('organization_name', ''),
             'website': instance.get('website', ''),
             'timezone': instance.get('timezone', ''),
@@ -126,6 +132,10 @@ class OnboardingProfileSerializer(serializers.Serializer):
             'contact_phone': instance.get('contact_phone', ''),
             'payment_methods': instance.get('payment_methods', []),
             'payment_settings': instance.get('payment_settings', {}),
+            'org_profile': instance.get('org_profile', {}),
+            'general_agent': instance.get('general_agent', {}),
+            'sales_agent': instance.get('sales_agent', {}),
+            'ai_platform': instance.get('ai_platform', {}),
             'what_you_sell': instance.get('what_you_sell', ''),
             'who_you_sell_to': instance.get('who_you_sell_to', ''),
             'general_agent_name': instance.get('general_agent_name', ''),
