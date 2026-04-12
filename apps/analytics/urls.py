@@ -18,6 +18,7 @@ from .views import (
     DocumentExtractionCandidateApproveView,
     DocumentExtractionCandidateRejectView,
     DocumentExtractionCandidateBatchView,
+    LearningLoopMetricsView,  # L11
 )
 
 router = DefaultRouter()
@@ -30,6 +31,7 @@ urlpatterns = [
     path('channels/', ChannelMetricsView.as_view(), name='analytics-channels'),
     path('intents/', IntentMetricsView.as_view(), name='analytics-intents'),
     path('sales-agent/', SalesAgentMetricsView.as_view(), name='analytics-sales-agent'),
+    path('learning-loop/', LearningLoopMetricsView.as_view(), name='analytics-learning-loop'),  # L11
     path('historical-imports/', HistoricalImportView.as_view(), name='analytics-historical-imports'),
     path('historical-imports/import-kb/', HistoricalImportKBView.as_view(), name='analytics-historical-imports-kb'),
     path('learning-candidates/', LearningCandidateView.as_view(), name='analytics-learning-candidates'),

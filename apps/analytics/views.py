@@ -478,6 +478,99 @@ class IntentMetricsView(APIView):
         return Response(result)
 
 
+class LearningLoopMetricsView(APIView):
+    """
+    L11 — GET /api/analytics/learning-loop/?days=30
+    Returns metrics about the learning pipeline: candidates pending, approval rates, impact on CVR.
+    """
+    permission_classes = [IsOrganizationMember]
+
+    def get(self, request):
+        org = request.user.organization
+        days = int(request.query_params.get('days', 30))
+        since = timezone.now() - timedelta(days=days)
+
+        # L11: Count candidates by status and kind
+        all_candidates = LearningCandidate.objects.filter(
+            organization=org,
+            updated_at__gte=since,
+        )
+        by_status = list(
+            all_candidates
+            .values('status')
+            .annotate(count=Count('id'))
+        )
+        by_kind = list(
+            all_candidates
+            .values('kind')
+            .annotate(count=Count('id'))
+        )
+
+        total = all_candidates.count()
+        pending = all_candidates.filter(status='pending').count()
+        approved = all_candidates.filter(status='approved').count()
+        rejected = all_candidates.filter(status='rejected').count()
+
+        approval_rate = round(approved / (approved + rejected) * 100, 1) if (approved + rejected) > 0 else 0.0
+
+        # L11: Impact analysis — CVR before/after learning approval
+        # Simple heuristic: compare CVR in conversations before and after a learning was approved
+        approved_articles = LearningCandidate.objects.filter(
+            organization=org,
+            status='approved',
+            updated_at__gte=since,
+        ).values_list('approved_article_id', flat=True)
+
+        cvr_before = 0.0
+        cvr_after = 0.0
+        if len(approved_articles) > 0:
+            # Get conversations that used approved learnings
+            convs_using_learnings = Conversation.objects.filter(
+                organization=org,
+                created_at__gte=since,
+                learning_candidates__status='approved',
+            ).distinct()
+
+            if convs_using_learnings.exists():
+                # Simple proxy: conversations with approved learnings have higher CVR
+                with_learning = convs_using_learnings.filter(
+                    commercial_outcome='purchased'
+                ).count()
+                cvr_after = round(with_learning / convs_using_learnings.count() * 100, 1) if convs_using_learnings.count() else 0.0
+
+            # Compare with conversations without learnings (simple baseline)
+            baseline_convs = Conversation.objects.filter(
+                organization=org,
+                created_at__gte=since,
+            ).exclude(
+                learning_candidates__status='approved'
+            ).distinct()
+
+            if baseline_convs.exists():
+                without_learning = baseline_convs.filter(
+                    commercial_outcome='purchased'
+                ).count()
+                cvr_before = round(without_learning / baseline_convs.count() * 100, 1) if baseline_convs.count() else 0.0
+
+        return Response({
+            'period_days': days,
+            'candidates': {
+                'total': total,
+                'by_status': by_status,
+                'by_kind': by_kind,
+                'pending': pending,
+                'approved': approved,
+                'rejected': rejected,
+                'approval_rate': approval_rate,
+            },
+            'impact': {
+                'cvr_before_learning': cvr_before,
+                'cvr_after_learning': cvr_after,
+                'cvr_improvement': round(cvr_after - cvr_before, 1) if (cvr_after - cvr_before) != 0 else 0.0,
+            },
+        })
+
+
 class SalesAgentMetricsView(APIView):
     """
     GET /api/analytics/sales-agent/?days=30
