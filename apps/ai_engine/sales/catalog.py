@@ -38,42 +38,61 @@ class CatalogService:
         Returns:
             List of dicts with product info (id, title, price_min, stock, etc.)
         """
-        if not query or not query.strip():
-            return []
-
-        # Filter base queryset
+        # Base queryset — active products for this org
         qs = Product.objects.filter(
             organization=organization,
             is_active=True,
         )
 
-        # Keyword search across all relevant product fields including attributes
+        # Stop words that carry no product-search value
+        STOP_WORDS = {
+            'hola', 'que', 'tal', 'como', 'hay', 'tienes', 'tienen', 'quisiera',
+            'quiero', 'ver', 'saber', 'que', 'los', 'las', 'una', 'uno', 'por',
+            'favor', 'gracias', 'porfavor', 'buenas', 'bueno', 'buena', 'sii',
+            'siii', 'siiii', 'noo', 'nooo', 'claro', 'okey', 'ok', 'oke',
+            'algo', 'algo', 'puede', 'puedo', 'podria', 'gustaria', 'gustar',
+            'mostrar', 'mostrarme', 'recomendar', 'recomendarme', 'ayudar',
+        }
+
+        # Keyword search across all relevant product fields
         products = []
         try:
             from django.db.models import Q
-            words = [w for w in query.lower().split() if len(w) > 2][:6]
-            q_filter = Q()
-            for word in words:
-                q_filter |= (
-                    Q(title__icontains=word) |
-                    Q(brand__icontains=word) |
-                    Q(category__icontains=word) |
-                    Q(subcategory__icontains=word) |
-                    Q(description__icontains=word) |
-                    Q(color__icontains=word) |
-                    Q(material__icontains=word) |
-                    Q(style__icontains=word) |
-                    Q(formality__icontains=word) |
-                    Q(fit__icontains=word)
-                )
 
-            if q_filter:
-                products = list(qs.filter(q_filter).order_by('-is_bestseller', '-popularity_score')[:limit * 2])
+            # Filter meaningful words (len > 2, not stop words)
+            if query:
+                words = [
+                    w for w in query.lower().split()
+                    if len(w) > 2 and w not in STOP_WORDS
+                ][:6]
             else:
+                words = []
+
+            if words:
+                q_filter = Q()
+                for word in words:
+                    q_filter |= (
+                        Q(title__icontains=word) |
+                        Q(brand__icontains=word) |
+                        Q(category__icontains=word) |
+                        Q(subcategory__icontains=word) |
+                        Q(description__icontains=word) |
+                        Q(color__icontains=word) |
+                        Q(material__icontains=word) |
+                        Q(style__icontains=word) |
+                        Q(formality__icontains=word) |
+                        Q(fit__icontains=word)
+                    )
+                products = list(qs.filter(q_filter).order_by('-is_bestseller', '-popularity_score')[:limit * 2])
+
+            # Fallback: if no keyword results (generic query or no match), show top products
+            if not products:
                 products = list(qs.order_by('-is_bestseller', '-popularity_score')[:limit * 2])
+                logger.info(f'No keyword matches for query "{query[:40]}", showing top {len(products)} products')
+
         except Exception as e:
             logger.warning(f'Product search failed: {e}')
-            products = []
+            products = list(qs.order_by('-is_bestseller', '-popularity_score')[:limit])
 
         # Avoid showing products already shown in session
         if session:
