@@ -21,6 +21,9 @@ def lookup_products(organization, query: str, limit: int = 5) -> list[dict]:
         from apps.ecommerce.models import Product
         import os
 
+        org_id = str(organization.id) if organization else 'unknown'
+        logger.debug('lookup_products_start', org_id=org_id, query=query[:100])
+
         # P1.2: Try semantic search first if API key and embeddings available
         api_key = os.environ.get('OPENAI_API_KEY', '')
         if api_key:
@@ -35,6 +38,8 @@ def lookup_products(organization, query: str, limit: int = 5) -> list[dict]:
                     status='active'
                 ).exclude(embedding_vector=[]).prefetch_related('variants')
 
+                logger.debug('semantic_search_candidates', count=all_products.count(), org_id=org_id)
+
                 # Score by cosine similarity
                 scored = []
                 for p in all_products:
@@ -48,12 +53,17 @@ def lookup_products(organization, query: str, limit: int = 5) -> list[dict]:
                 products = [p for p, _ in scored[:limit]]
 
                 if products:
+                    logger.info('semantic_search_found', count=len(products), org_id=org_id, query=query[:50])
                     return [_serialize_product(p) for p in products]
                 # Fall through to keyword search if no semantic matches
+                logger.debug('semantic_search_no_matches', org_id=org_id)
 
         # P1.2 Fallback: keyword search (existing logic)
         words = [w for w in query.lower().split() if len(w) > 2][:5]
+        logger.debug('keyword_search_words', words=words, org_id=org_id)
+
         if not words:
+            logger.debug('keyword_search_no_words', org_id=org_id)
             products = Product.objects.filter(
                 organization=organization, is_active=True, status='active'
             ).prefetch_related('variants')[:limit]
@@ -75,7 +85,9 @@ def lookup_products(organization, query: str, limit: int = 5) -> list[dict]:
             products = Product.objects.filter(
                 organization=organization, is_active=True, status='active'
             ).filter(q_filter).prefetch_related('variants')[:limit]
+            logger.info('keyword_search_found', count=len(products), org_id=org_id, query=query[:50], words=words)
 
+        logger.debug('lookup_products_result', count=len(products) if products else 0, org_id=org_id)
         return [_serialize_product(p) for p in products]
 
     except Exception as exc:

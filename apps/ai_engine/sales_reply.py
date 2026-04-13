@@ -1374,13 +1374,23 @@ def _generate_reply(
 
         # Guard: never invent products when the organization has no active catalog.
         has_catalog_snapshot = bool(sales_ctx.catalog_snapshot)
+        is_catalog_request = _is_catalog_request(message_text, stage)
+        has_no_products = not products
+
+        logger.debug(
+            'empty_catalog_guard_check',
+            has_no_products=has_no_products,
+            is_catalog_request=is_catalog_request,
+            has_catalog_snapshot=has_catalog_snapshot,
+            products_count=len(products) if products else 0,
+            message_text=message_text[:100],
+            stage=stage,
+        )
+
         # Strong guard: if no products found from lookup_products() AND it's a catalog request,
         # show the empty catalog reply regardless of snapshot state (snapshot may be stale).
-        if (
-            not products
-            and _is_catalog_request(message_text, stage)
-        ):
-            logger.debug('empty_catalog_guard_activated', has_snapshot=has_catalog_snapshot, stage=stage)
+        if has_no_products and is_catalog_request:
+            logger.info('empty_catalog_guard_activated', stage=stage, message=message_text[:50])
             return _empty_catalog_reply(sales_ctx, stage)
 
         # P2.1 Step 1: Sales Brain (existing _llm_reply)
