@@ -51,10 +51,15 @@ def _load_agent_capabilities(organization) -> dict:
 
     config = ChannelConfig.objects.filter(organization=organization, channel='onboarding').first()
     s = normalise_settings((config.settings if config else {}) or {})
-    sa = s['sales_agent']
-    sales_enabled = bool(sa.get('enabled', True))
+    sa = s.get('sales_agent', {})
+    # Sales Agent is ALWAYS enabled unless explicitly set to False
+    # This ensures product_inquiry, price_inquiry, and all sales-related intents
+    # are always handled by the SalesAgent, never by DirectReplyExecutor
+    sales_enabled = sa.get('enabled', True)
+    if sales_enabled is None:
+        sales_enabled = True
     return {
-        'sales_enabled': sales_enabled,
+        'sales_enabled': bool(sales_enabled),
     }
 
 

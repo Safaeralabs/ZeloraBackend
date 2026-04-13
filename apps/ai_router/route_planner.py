@@ -110,6 +110,8 @@ class RoutePlanner:
             )
 
         # ── E-commerce: sales agent ───────────────────────────────────────────
+        # ALWAYS route product/price/buy inquiries to Sales Agent.
+        # Sales Agent is mandatory for all commerce-related intents.
         if intent.intent in (IntentName.BUY_INTENT, IntentName.PRICE_INQUIRY, IntentName.PRODUCT_INQUIRY):
             post = []
             if intent.intent == IntentName.BUY_INTENT:
@@ -120,14 +122,6 @@ class RoutePlanner:
                         payload={'task_type': 'stock_check', 'priority': 'high'},
                     )
                 ]
-            if not capabilities['sales_enabled']:
-                return (
-                    RouteType.DIRECT_AI_REPLY,
-                    None,
-                    None,
-                    'generate_direct_reply',
-                    [],
-                )
             return (
                 RouteType.ROUTE_TO_SALES_AGENT,
                 'sales_pipeline',
@@ -157,7 +151,7 @@ class RoutePlanner:
                 ],
             )
 
-        # ── General FAQ: direct AI reply ──────────────────────────────────────
+        # ── General FAQ: always route to Sales Agent (general agent removed) ───
         if intent.intent == IntentName.GENERAL_FAQ:
             if intent.recommended_action == 'route_to_operations_agent':
                 return (
@@ -167,7 +161,8 @@ class RoutePlanner:
                     'handoff_to_operations_agent',
                     [],
                 )
-            if active_ai_agent == 'sales' and capabilities['sales_enabled']:
+            # Always route to Sales Agent for FAQ (no more DirectReplyExecutor)
+            if active_ai_agent == 'sales':
                 return (
                     RouteType.ROUTE_TO_SALES_AGENT,
                     'sales_pipeline',
@@ -175,19 +170,11 @@ class RoutePlanner:
                     'continue_with_sales_agent',
                     [],
                 )
-            if capabilities['sales_enabled']:
-                return (
-                    RouteType.ROUTE_TO_SALES_AGENT,
-                    'sales_pipeline',
-                    'sales_agent',
-                    'handoff_to_sales_agent',
-                    [],
-                )
             return (
-                RouteType.DIRECT_AI_REPLY,
-                None,
-                None,
-                'generate_direct_reply',
+                RouteType.ROUTE_TO_SALES_AGENT,
+                'sales_pipeline',
+                'sales_agent',
+                'handoff_to_sales_agent',
                 [],
             )
 
