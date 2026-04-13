@@ -143,20 +143,12 @@ def _execute_decision(
     elif route == RouteType.ESCALATE_TO_HUMAN:
         executor = EscalateExecutor()
     else:
-        # Route sales intents to SalesAgentExecutor
-        sales_intents = {
-            IntentName.BUY_INTENT,
-            IntentName.PRODUCT_INQUIRY,
-            IntentName.PRICE_INQUIRY,
-            IntentName.GENERAL_FAQ,
-            IntentName.ORDER_STATUS,
-            IntentName.RETURN_REQUEST,
-        }
-
-        if decision.intent in sales_intents:
+        # Route to SalesAgent for app/web channels (any intent)
+        # SalesAgent handles discovery, product inquiries, checkout, etc.
+        if conversation.canal in ('app', 'web'):
             executor = SalesAgentExecutor()
         else:
-            # DIRECT_AI_REPLY, REQUEST_CLARIFICATION, TRIGGER_FLOW, CREATE_TASK, CREATE_INSIGHT
+            # WhatsApp, Instagram, etc. use DirectReply
             executor = DirectReplyExecutor()
 
     return executor.execute(
