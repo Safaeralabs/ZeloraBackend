@@ -69,15 +69,12 @@ class SalesAgentExecutor(BaseExecutor):
             session = SessionManager.get_or_create(conversation)
 
             # ===== 2. Load conversation history =====
-            history = list(
-                Message.objects.filter(conversation=conversation)
-                .order_by('timestamp')
-                .values_list('role', 'content')[-12:]
-            )
+            # Django QuerySets don't support negative indexing — fetch newest first, then reverse
             history_objs = list(
                 Message.objects.filter(conversation=conversation)
-                .order_by('timestamp')[-12:]
+                .order_by('-timestamp')[:12]
             )
+            history_objs.reverse()  # oldest → newest order for LLM context
 
             # ===== 3. Detect situation (LLM) =====
             situation = SituationDetector.detect(
