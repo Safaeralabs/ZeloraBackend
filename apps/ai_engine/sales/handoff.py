@@ -4,7 +4,7 @@ Handoff Handler — Manages escalation from sales agent to human.
 import logging
 from typing import Optional
 
-from apps.ai_router.models import Conversation
+from apps.conversations.models import Conversation
 
 logger = logging.getLogger(__name__)
 

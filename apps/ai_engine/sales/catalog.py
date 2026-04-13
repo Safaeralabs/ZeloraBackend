@@ -2,7 +2,6 @@
 Catalog Service — Real product queries with embeddings.
 """
 import logging
-import numpy as np
 from typing import Optional, List
 from decimal import Decimal
 

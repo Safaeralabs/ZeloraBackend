@@ -19,7 +19,7 @@ import logging
 from typing import Optional
 
 from .base import BaseExecutor
-from apps.ai_router.models import Conversation, Message
+from apps.conversations.models import Conversation, Message
 from apps.ai_engine.models import SalesSession
 from apps.ai_engine.sales.session import SessionManager
 from apps.ai_engine.sales.situation import SituationDetector
