@@ -250,3 +250,127 @@ class OpenAIUsageLog(models.Model):
         ]
 
 
+class SalesSession(models.Model):
+    """
+    Persistent sales session state per conversation.
+    Tracks the customer journey through the sales funnel.
+    """
+    STAGE_CHOICES = [
+        ('discovery', 'Discovery'),
+        ('considering', 'Considering'),
+        ('checkout', 'Checkout'),
+        ('handoff', 'Handoff to Human'),
+        ('closed', 'Closed'),
+    ]
+
+    SITUATION_CHOICES = [
+        ('discovery', 'Discovery'),
+        ('confused_customer', 'Confused Customer'),
+        ('indecisive_customer', 'Indecisive Customer'),
+        ('comparing_customer', 'Comparing Customer'),
+        ('price_sensitive_customer', 'Price Sensitive Customer'),
+        ('specific_product_customer', 'Specific Product Customer'),
+        ('ready_to_buy_customer', 'Ready to Buy Customer'),
+        ('urgent_customer', 'Urgent Customer'),
+        ('expansion_opportunity', 'Expansion Opportunity'),
+        ('gift_customer', 'Gift Customer'),
+        ('objection_customer', 'Objection Customer'),
+        ('post_sale', 'Post Sale'),
+        ('logistics_customer', 'Logistics Customer'),
+        ('administrative_customer', 'Administrative Customer'),
+        ('changing_mind_customer', 'Changing Mind Customer'),
+        ('inactive_customer', 'Inactive Customer'),
+        ('out_of_catalog', 'Out of Catalog'),
+        ('off_topic', 'Off Topic'),
+        ('prompt_injection', 'Prompt Injection'),
+        ('checkout', 'Checkout'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.OneToOneField(
+        'conversations.Conversation', on_delete=models.CASCADE, related_name='sales_session'
+    )
+    organization = models.ForeignKey(
+        'accounts.Organization', on_delete=models.CASCADE, related_name='sales_sessions'
+    )
+
+    # Stage tracking
+    stage = models.CharField(
+        max_length=20, choices=STAGE_CHOICES, default='discovery',
+        help_text='Current position in the sales funnel'
+    )
+    situation = models.CharField(
+        max_length=30, choices=SITUATION_CHOICES, default='discovery',
+        help_text='Detected customer situation/context'
+    )
+    intent = models.CharField(
+        max_length=100, blank=True, default='',
+        help_text='Detected intent (buy_intent, price_inquiry, etc.)'
+    )
+
+    # Customer context
+    budget_min = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text='Inferred minimum budget'
+    )
+    budget_max = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text='Inferred maximum budget'
+    )
+    category_interest = models.CharField(
+        max_length=100, blank=True, default='',
+        help_text='Product category customer is interested in'
+    )
+    selected_products = models.JSONField(
+        default=list, blank=True,
+        help_text='List of product UUIDs customer has selected/liked'
+    )
+    shown_products = models.JSONField(
+        default=list, blank=True,
+        help_text='List of product UUIDs already shown (avoid repetition)'
+    )
+    objections = models.JSONField(
+        default=list, blank=True,
+        help_text='List of detected objections (price, shipping, quality, etc.)'
+    )
+    shipping_city = models.CharField(
+        max_length=100, blank=True, default='',
+        help_text='Detected or stated shipping location'
+    )
+
+    # Checkout state
+    checkout_step = models.PositiveSmallIntegerField(
+        default=0,
+        help_text='0=none, 1=confirm_products, 2=confirm_total, 3=payment_method, etc.'
+    )
+    checkout_data = models.JSONField(
+        default=dict, blank=True,
+        help_text='Temporary cart, total, payment method selection, etc.'
+    )
+
+    # Metadata
+    message_count = models.PositiveIntegerField(default=0)
+    last_situation = models.CharField(
+        max_length=30, blank=True, default='',
+        help_text='Previous situation detected (for change detection)'
+    )
+    summary = models.TextField(
+        blank=True, default='',
+        help_text='LLM-generated summary when context exceeds threshold'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'sales_sessions'
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['organization', 'stage']),
+            models.Index(fields=['organization', 'updated_at']),
+            models.Index(fields=['conversation']),
+        ]
+
+    def __str__(self):
+        return f'SalesSession({self.conversation_id}, stage={self.stage}, situation={self.situation})'
+
+

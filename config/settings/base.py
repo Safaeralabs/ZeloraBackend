@@ -482,7 +482,12 @@ structlog.configure(
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4o')
 OPENAI_ROUTER_MODEL = os.environ.get('OPENAI_ROUTER_MODEL', 'gpt-4.1-nano')
-OPENAI_SALES_MODEL = os.environ.get('OPENAI_SALES_MODEL', os.environ.get('OPENAI_MODEL', 'gpt-4o'))
+
+# Multi-tier model strategy for sales agent
+OPENAI_SITUATION_MODEL = os.environ.get('OPENAI_SITUATION_MODEL', 'gpt-4.1-nano')  # fast/cheap extraction
+OPENAI_SALES_MODEL = os.environ.get('OPENAI_SALES_MODEL', 'gpt-4o-mini')  # main conversation
+OPENAI_PREMIUM_MODEL = os.environ.get('OPENAI_PREMIUM_MODEL', 'gpt-4o')  # complex reasoning
+
 OPENAI_EMBEDDING_MODEL = os.environ.get('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small')
 
 # ─── WhatsApp / Meta ───────────────────────────────────────────────────────────

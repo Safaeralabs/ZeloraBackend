@@ -13,12 +13,13 @@ from __future__ import annotations
 import structlog
 from datetime import datetime, timezone
 
-from .schemas import RouteType
+from .schemas import RouteType, IntentName
 from .router import build_ai_router_service
 from .decision_object import RouterDecision
 from .executors.direct_reply import DirectReplyExecutor
 from .executors.escalate import EscalateExecutor
 from .executors.block import BlockExecutor
+from .executors.sales_agent import SalesAgentExecutor
 
 logger = structlog.get_logger(__name__)
 
@@ -142,8 +143,21 @@ def _execute_decision(
     elif route == RouteType.ESCALATE_TO_HUMAN:
         executor = EscalateExecutor()
     else:
-        # DIRECT_AI_REPLY, REQUEST_CLARIFICATION, TRIGGER_FLOW, CREATE_TASK, CREATE_INSIGHT
-        executor = DirectReplyExecutor()
+        # Route sales intents to SalesAgentExecutor
+        sales_intents = {
+            IntentName.BUY_INTENT,
+            IntentName.PRODUCT_INQUIRY,
+            IntentName.PRICE_INQUIRY,
+            IntentName.GENERAL_FAQ,
+            IntentName.ORDER_STATUS,
+            IntentName.RETURN_REQUEST,
+        }
+
+        if decision.intent in sales_intents:
+            executor = SalesAgentExecutor()
+        else:
+            # DIRECT_AI_REPLY, REQUEST_CLARIFICATION, TRIGGER_FLOW, CREATE_TASK, CREATE_INSIGHT
+            executor = DirectReplyExecutor()
 
     return executor.execute(
         conversation=conversation,
