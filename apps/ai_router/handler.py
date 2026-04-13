@@ -19,7 +19,6 @@ from .decision_object import RouterDecision
 from .executors.direct_reply import DirectReplyExecutor
 from .executors.escalate import EscalateExecutor
 from .executors.block import BlockExecutor
-from .executors.route_to_agent import RouteToAgentExecutor
 
 logger = structlog.get_logger(__name__)
 
@@ -45,24 +44,6 @@ def _active_ai_agent(conversation) -> str | None:
     return None
 
 
-def _load_agent_capabilities(organization) -> dict:
-    from apps.channels_config.models import ChannelConfig
-    from apps.channels_config.settings_schema import normalise_settings
-
-    config = ChannelConfig.objects.filter(organization=organization, channel='onboarding').first()
-    s = normalise_settings((config.settings if config else {}) or {})
-    sa = s.get('sales_agent', {})
-    # Sales Agent is ALWAYS enabled unless explicitly set to False
-    # This ensures product_inquiry, price_inquiry, and all sales-related intents
-    # are always handled by the SalesAgent, never by DirectReplyExecutor
-    sales_enabled = sa.get('enabled', True)
-    if sales_enabled is None:
-        sales_enabled = True
-    return {
-        'sales_enabled': bool(sales_enabled),
-    }
-
-
 def handle_inbound_message(
     *,
     conversation,
@@ -82,7 +63,6 @@ def handle_inbound_message(
         bot_reply_text may be None if the route produces no reply (e.g. silent escalation).
     """
     try:
-        agent_capabilities = _load_agent_capabilities(organization)
         raw_event = {
             'tenant_id': str(organization.id),
             'channel': conversation.canal,
@@ -94,7 +74,6 @@ def handle_inbound_message(
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'metadata': {
                 'canal': conversation.canal,
-                'agent_capabilities': agent_capabilities,
                 'active_ai_agent': _active_ai_agent(conversation),
             },
         }
@@ -162,12 +141,6 @@ def _execute_decision(
         executor = BlockExecutor()
     elif route == RouteType.ESCALATE_TO_HUMAN:
         executor = EscalateExecutor()
-    elif route == RouteType.ROUTE_TO_SALES_AGENT:
-        executor = RouteToAgentExecutor('sales')
-    elif route == RouteType.ROUTE_TO_MARKETING_AGENT:
-        executor = RouteToAgentExecutor('marketing')
-    elif route == RouteType.ROUTE_TO_OPERATIONS_AGENT:
-        executor = RouteToAgentExecutor('operations')
     else:
         # DIRECT_AI_REPLY, REQUEST_CLARIFICATION, TRIGGER_FLOW, CREATE_TASK, CREATE_INSIGHT
         executor = DirectReplyExecutor()

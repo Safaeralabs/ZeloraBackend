@@ -26,16 +26,6 @@ class ModelSelector:
                 reason='Deterministic security block; no provider call required.',
             )
 
-        if route_name == 'route_to_sales_agent':
-            provider = self._providers[ProviderName.OPENAI]
-            profile = ModelProfile.STANDARD
-            return ModelSelection(
-                profile=profile,
-                provider=provider.provider_name,
-                model_name=provider.resolve_model_name(profile),
-                reason=f'Standard profile selected for agent handoff in tenant {tenant_id}.',
-            )
-
         if route_name == 'trigger_flow':
             provider = self._providers[ProviderName.OPENAI]
             profile = ModelProfile.FAST

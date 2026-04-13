@@ -59,7 +59,6 @@ class RoutePlanner:
         risk: RiskAssessment,
         policy: PolicyDecision,
     ) -> tuple[RouteType, str | None, str | None, str, list[PostAction]]:
-        capabilities = self._agent_capabilities(event)
         active_ai_agent = self._active_ai_agent(event)
         # ── Org custom intents: look up matching DB flow ──────────────────────
         if intent.custom_intent_name:
@@ -109,72 +108,33 @@ class RoutePlanner:
                 [],
             )
 
-        # ── E-commerce: sales agent ───────────────────────────────────────────
-        # ALWAYS route product/price/buy inquiries to Sales Agent.
-        # Sales Agent is mandatory for all commerce-related intents.
+        # ── E-commerce: product/price/buy inquiries ────────────────────────────
         if intent.intent in (IntentName.BUY_INTENT, IntentName.PRICE_INQUIRY, IntentName.PRODUCT_INQUIRY):
-            post = []
-            if intent.intent == IntentName.BUY_INTENT:
-                post = [
-                    PostAction(
-                        action_type='create_task',
-                        target='operations_agent',
-                        payload={'task_type': 'stock_check', 'priority': 'high'},
-                    )
-                ]
             return (
-                RouteType.ROUTE_TO_SALES_AGENT,
-                'sales_pipeline',
-                'sales_agent',
-                'handoff_to_sales_agent',
-                post,
+                RouteType.DIRECT_AI_REPLY,
+                None,
+                None,
+                'generate_direct_reply',
+                [],
             )
 
-        # ── E-commerce: operations agent ──────────────────────────────────────
+        # ── E-commerce: order status and returns ──────────────────────────────
         if intent.intent in (IntentName.ORDER_STATUS, IntentName.RETURN_REQUEST):
-            urgency = 'high' if intent.intent == IntentName.RETURN_REQUEST else 'normal'
             return (
-                RouteType.ROUTE_TO_OPERATIONS_AGENT,
-                'operations_pipeline',
-                'operations_agent',
-                'handoff_to_operations_agent',
-                [
-                    PostAction(
-                        action_type='create_task',
-                        target='operations_agent',
-                        payload={
-                            'task_type': 'order_lookup' if intent.intent == IntentName.ORDER_STATUS else 'return_processing',
-                            'priority': urgency,
-                            'entities': intent.entities,
-                        },
-                    )
-                ],
+                RouteType.DIRECT_AI_REPLY,
+                None,
+                None,
+                'generate_direct_reply',
+                [],
             )
 
-        # ── General FAQ: always route to Sales Agent (general agent removed) ───
+        # ── General FAQ ────────────────────────────────────────────────────────
         if intent.intent == IntentName.GENERAL_FAQ:
-            if intent.recommended_action == 'route_to_operations_agent':
-                return (
-                    RouteType.ROUTE_TO_OPERATIONS_AGENT,
-                    'operations_pipeline',
-                    'operations_agent',
-                    'handoff_to_operations_agent',
-                    [],
-                )
-            # Always route to Sales Agent for FAQ (no more DirectReplyExecutor)
-            if active_ai_agent == 'sales':
-                return (
-                    RouteType.ROUTE_TO_SALES_AGENT,
-                    'sales_pipeline',
-                    'sales_agent',
-                    'continue_with_sales_agent',
-                    [],
-                )
             return (
-                RouteType.ROUTE_TO_SALES_AGENT,
-                'sales_pipeline',
-                'sales_agent',
-                'handoff_to_sales_agent',
+                RouteType.DIRECT_AI_REPLY,
+                None,
+                None,
+                'generate_direct_reply',
                 [],
             )
 
@@ -189,27 +149,11 @@ class RoutePlanner:
             )
 
         if intent.intent == IntentName.UNKNOWN and event.channel in (Channel.WEB, Channel.APP):
-            if active_ai_agent == 'sales' and capabilities['sales_enabled']:
-                return (
-                    RouteType.ROUTE_TO_SALES_AGENT,
-                    'sales_pipeline',
-                    'sales_agent',
-                    'continue_with_sales_agent',
-                    [],
-                )
-            if not capabilities['sales_enabled']:
-                return (
-                    RouteType.DIRECT_AI_REPLY,
-                    None,
-                    None,
-                    'generate_direct_reply',
-                    [],
-                )
             return (
-                RouteType.ROUTE_TO_SALES_AGENT,
-                'sales_pipeline',
-                'sales_agent',
-                'handoff_to_sales_agent',
+                RouteType.REQUEST_CLARIFICATION,
+                None,
+                None,
+                'request_more_context',
                 [],
             )
 
@@ -220,13 +164,6 @@ class RoutePlanner:
             'request_more_context',
             [],
         )
-
-    def _agent_capabilities(self, event: NormalizedEvent) -> dict[str, bool]:
-        metadata = getattr(event, 'metadata', None) or {}
-        raw = metadata.get('agent_capabilities') or {}
-        return {
-            'sales_enabled': bool(raw.get('sales_enabled', True)),
-        }
 
     def _active_ai_agent(self, event: NormalizedEvent) -> str | None:
         metadata = getattr(event, 'metadata', None) or {}

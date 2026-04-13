@@ -145,48 +145,6 @@ class AIInsight(models.Model):
         return f'[{self.severity.upper()}] {self.title}'
 
 
-class SalesAgentLog(models.Model):
-    """
-    Structured audit log for every Sales Agent invocation.
-    Captures funnel stage, decision, actions and context used.
-    """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    organization = models.ForeignKey(
-        'accounts.Organization', on_delete=models.CASCADE, related_name='sales_agent_logs'
-    )
-    conversation = models.ForeignKey(
-        'conversations.Conversation', on_delete=models.CASCADE, related_name='sales_agent_logs'
-    )
-    stage = models.CharField(max_length=30)
-    confidence = models.FloatField(default=0.0)
-    decision = models.CharField(max_length=30)
-    handoff_needed = models.BooleanField(default=False)
-    handoff_reason = models.CharField(max_length=200, blank=True)
-    products_shown = models.JSONField(default=list)
-    recommended_actions = models.JSONField(default=list)
-    context_used = models.JSONField(default=dict)
-    # P2.4: Evaluation and channel tracking
-    evaluation_score = models.FloatField(null=True, blank=True)  # 0-1, from evaluator
-    evaluation_coherencia = models.FloatField(null=True, blank=True)  # 0-1
-    evaluation_naturalidad = models.FloatField(null=True, blank=True)  # 0-1
-    evaluation_brand_fit = models.FloatField(null=True, blank=True)  # 0-1
-    evaluation_cta_quality = models.FloatField(null=True, blank=True)  # 0-1
-    evaluation_flags = models.JSONField(default=list, blank=True)  # list of flags from evaluator
-    channel = models.CharField(max_length=30, blank=True)  # whatsapp, web, instagram, email, telegram
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = 'sales_agent_logs'
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['organization', 'stage']),
-            models.Index(fields=['conversation']),
-        ]
-
-    def __str__(self):
-        return f'[{self.stage}] {self.decision} @ {str(self.conversation_id)[:8]}'
-
-
 class AIAgent(models.Model):
     """
     Configurable AI functional agent scoped to an organization.
@@ -262,7 +220,6 @@ class OpenAIUsageLog(models.Model):
     Used to track spend and debug performance per feature.
     """
     FEATURE_CHOICES = [
-        ('sales_agent', 'Sales Agent'),
         ('learning', 'Learning Engine'),
         ('style_extraction', 'Style Extraction'),
         ('embedding', 'Embedding'),
@@ -293,72 +250,3 @@ class OpenAIUsageLog(models.Model):
         ]
 
 
-class ContactMemory(models.Model):
-    """
-    P3.1: Persistent memory per contact for cross-conversation context.
-
-    Updated at the end of every SalesAgent.run() with inferred preferences,
-    budget, style cues, and products shown. Injected into the next conversation
-    with the same contact.
-    """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    organization = models.ForeignKey(
-        'accounts.Organization', on_delete=models.CASCADE, related_name='contact_memories'
-    )
-    contact = models.OneToOneField(
-        'accounts.Contact', on_delete=models.CASCADE, related_name='memory'
-    )
-
-    # Inferred preferences (updated by Sales Agent)
-    inferred_budget_min = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True,
-        help_text='Min budget inferred from conversation (e.g., "presupuesto 50k")'
-    )
-    inferred_budget_max = models.DecimalField(
-        max_digits=12, decimal_places=2, null=True, blank=True,
-        help_text='Max budget inferred'
-    )
-    style_cues = models.JSONField(
-        default=dict, blank=True,
-        help_text='Inferred style patterns: {"tone": "casual", "urgency": "high", "decision_speed": "quick"}'
-    )
-    occasion_hints = models.JSONField(
-        default=list, blank=True,
-        help_text='e.g., ["boda", "trabajo", "casual"]'
-    )
-    category_preferences = models.JSONField(
-        default=list, blank=True,
-        help_text='Categories shown/mentioned: ["clothing", "electronics"]'
-    )
-    last_products_shown = models.JSONField(
-        default=list, blank=True,
-        help_text='Last 5 product IDs shown to this contact'
-    )
-    last_intent = models.CharField(
-        max_length=50, blank=True,
-        help_text='Last detected intent: discovering, considering, intent_to_buy, checkout_blocked, etc.'
-    )
-    last_objection = models.CharField(
-        max_length=50, blank=True,
-        help_text='Last detected objection: price, shipping, availability, trust, quality, urgency'
-    )
-
-    # Metadata for tracking
-    conversation_count = models.PositiveIntegerField(default=0)
-    last_conversation_at = models.DateTimeField(null=True, blank=True)
-    total_products_viewed = models.PositiveIntegerField(default=0)
-    converted = models.BooleanField(default=False, help_text='Has this contact purchased?')
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'contact_memories'
-        ordering = ['-updated_at']
-        indexes = [
-            models.Index(fields=['organization', 'contact']),
-            models.Index(fields=['organization', 'updated_at']),
-        ]
-
-    def __str__(self):
-        return f'Memory for {self.contact.full_name} (Budget: {self.inferred_budget_min}-{self.inferred_budget_max})'

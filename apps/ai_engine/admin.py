@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import AIAgent, AITask, AIInsight, AIPerformanceLog, SalesAgentLog
+from .models import AIAgent, AITask, AIInsight, AIPerformanceLog
 
 
 @admin.register(AITask)
@@ -23,13 +23,6 @@ class AIPerformanceLogAdmin(admin.ModelAdmin):
     list_display = ['organization', 'date', 'model_name', 'total_calls', 'bot_resolution_rate']
     list_filter = ['model_name', 'organization']
     date_hierarchy = 'date'
-
-
-@admin.register(SalesAgentLog)
-class SalesAgentLogAdmin(admin.ModelAdmin):
-    list_display = ['stage', 'decision', 'confidence', 'handoff_needed', 'organization', 'created_at']
-    list_filter = ['stage', 'decision', 'handoff_needed', 'organization']
-    readonly_fields = ['id', 'products_shown', 'recommended_actions', 'context_used', 'created_at']
 
 
 @admin.register(AIAgent)

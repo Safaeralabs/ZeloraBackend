@@ -24,7 +24,6 @@ from apps.accounts.models import Organization
 from apps.analytics.models import MetricsSnapshot
 from apps.conversations.models import Conversation
 from apps.ecommerce.models import Order
-from apps.ai_engine.models import SalesAgentLog
 
 
 class Command(BaseCommand):
@@ -128,25 +127,9 @@ class Command(BaseCommand):
             ).distinct().count()
             reply_rate = (bot_replied / channel_total * 100) if channel_total > 0 else 0
 
-            # P3.3: Quality scores from evaluator (from SalesAgentLog)
-            agent_logs = SalesAgentLog.objects.filter(
-                conversation__in=channel_convs,
-                channel=canal,
-                evaluation_score__isnull=False,
-            )
-
-            avg_naturalidad = agent_logs.aggregate(avg_nat=Avg('evaluation_naturalidad'))['avg_nat']
-            avg_brand_fit = agent_logs.aggregate(avg_brand=Avg('evaluation_brand_fit'))['avg_brand']
-            avg_eval_score = agent_logs.aggregate(avg_score=Avg('evaluation_score'))['avg_score']
-
-            naturalness_score = (
-                float(avg_naturalidad) if avg_naturalidad is not None
-                else (float(avg_eval_score) if avg_eval_score is not None else 0.7)
-            )
-            brand_fit_score = (
-                float(avg_brand_fit) if avg_brand_fit is not None
-                else (float(avg_eval_score) if avg_eval_score is not None else 0.75)
-            )
+            # P3.3: Quality scores (SalesAgent removed - using defaults)
+            naturalness_score = 0.0
+            brand_fit_score = 0.0
 
             # Create or update MetricsSnapshot
             snapshot, created = MetricsSnapshot.objects.update_or_create(
