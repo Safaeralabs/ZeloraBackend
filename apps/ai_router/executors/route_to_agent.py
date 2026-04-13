@@ -153,6 +153,15 @@ class RouteToAgentExecutor(BaseExecutor):
             operator_state['active_ai_agent'] = 'sales'
             if result.handoff.needed:
                 operator_state['commercial_status'] = 'escalado'
+                # Mark conversation as owned by human — this suppresses AI responses
+                operator_state['owner'] = 'humano'
+                # Create system message for appchat
+                from apps.conversations.models import Message
+                Message.objects.create(
+                    conversation=conversation,
+                    role='system',
+                    content='Conectado con un asesor. En breve te atenderán.',
+                )
             else:
                 operator_state['commercial_status'] = self._map_sales_stage_to_commercial_status(result.stage)
             operator_state['opportunity'] = result.stage in {'considering', 'intent_to_buy', 'checkout_blocked'}

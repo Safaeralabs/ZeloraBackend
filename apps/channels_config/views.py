@@ -558,12 +558,24 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
         metadata={'source': source, 'intent': intent},
     )
 
-    bot_message = Message.objects.create(
-        conversation=conversation,
-        role='bot',
-        content=bot_reply_text or 'Recibí tu mensaje. ¿En qué puedo ayudarte?',
-        metadata={'source': source, 'intent': intent, 'generated_by': 'ai_router'},
-    )
+    # Reload conversation from DB to get any metadata changes from escalation
+    conversation.refresh_from_db()
+
+    # Check if conversation was escalated to human during this turn
+    def _is_human_owned(conv) -> bool:
+        metadata = conv.metadata or {}
+        return (metadata.get('operator_state') or {}).get('owner') == 'humano'
+
+    # Only create bot message if conversation is still AI-owned
+    # If escalated to human, suppress bot response
+    bot_message = None
+    if not _is_human_owned(conversation) and bot_reply_text:
+        bot_message = Message.objects.create(
+            conversation=conversation,
+            role='bot',
+            content=bot_reply_text,
+            metadata={'source': source, 'intent': intent, 'generated_by': 'ai_router'},
+        )
 
     try:
         from channels.layers import get_channel_layer
@@ -590,40 +602,47 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
                 'conversation': conversation_payload,
             },
         )
-        async_to_sync(channel_layer.group_send)(
-            f'org_{conversation.organization_id}',
-            {
-                'type': 'conversation.message',
-                'conversation_id': str(conversation.id),
-                'message': MessageSerializer(bot_message).data,
-                'conversation': conversation_payload,
-            },
-        )
+        # Only broadcast bot message if one was created (not escalated to human)
+        if bot_message:
+            async_to_sync(channel_layer.group_send)(
+                f'org_{conversation.organization_id}',
+                {
+                    'type': 'conversation.message',
+                    'conversation_id': str(conversation.id),
+                    'message': MessageSerializer(bot_message).data,
+                    'conversation': conversation_payload,
+                },
+            )
     except Exception:
         pass
 
     _broadcast_public_appchat_message(conversation, user_message)
-    _broadcast_public_appchat_message(conversation, bot_message)
-    _broadcast_public_webchat_message(conversation, bot_message)
+    if bot_message:
+        _broadcast_public_appchat_message(conversation, bot_message)
+        _broadcast_public_webchat_message(conversation, bot_message)
+    # Build messages array: always include user message, bot message only if created
+    messages_list = [
+        {
+            'id': str(user_message.id),
+            'role': user_message.role,
+            'content': user_message.content,
+            'timestamp': user_message.timestamp.isoformat(),
+        },
+    ]
+    if bot_message:
+        messages_list.append({
+            'id': str(bot_message.id),
+            'role': bot_message.role,
+            'content': bot_message.content,
+            'timestamp': bot_message.timestamp.isoformat(),
+        })
+
     return {
         'conversation_id': str(conversation.id),
         'contact_id': str(contact.id),
         'intent': intent,
         'session_id': data['session_id'],
-        'messages': [
-            {
-                'id': str(user_message.id),
-                'role': user_message.role,
-                'content': user_message.content,
-                'timestamp': user_message.timestamp.isoformat(),
-            },
-            {
-                'id': str(bot_message.id),
-                'role': bot_message.role,
-                'content': bot_message.content,
-                'timestamp': bot_message.timestamp.isoformat(),
-            },
-        ],
+        'messages': messages_list,
     }
 
 
