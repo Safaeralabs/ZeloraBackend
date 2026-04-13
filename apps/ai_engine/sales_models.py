@@ -72,6 +72,7 @@ class BuyerProfile:
     urgency: str = 'exploring'
     objection: str | None = None
     style: str = 'exploratory'
+    archetype: str = 'exploratory'  # gift_buyer | deal_hunter | impulse_buyer | researcher | exploratory
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

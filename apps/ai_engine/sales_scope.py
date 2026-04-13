@@ -8,6 +8,7 @@ from typing import Any
 
 from .sales_models import (
     STAGE_CHECKOUT_BLOCKED,
+    STAGE_CONSIDERING,
     STAGE_DISCOVERING,
     STAGE_INTENT_TO_BUY,
     BrandProfile,
@@ -19,10 +20,15 @@ from .sales_models import (
 
 def _enforce_reply_scope(*, message_text: str, reply_text: str, sales_ctx: SalesContext, stage: str) -> str:
     """Block suspicious general-knowledge replies that don't anchor to the business."""
+    import structlog
+    _logger = structlog.get_logger(__name__)
+
     from .sales_reply import _apply_brand_voice
 
+    _logger.debug('enforcing_reply_scope', stage=stage)
     reply = ' '.join((reply_text or '').split()).strip()
     if not reply:
+        _logger.debug('empty_reply_after_strip')
         return reply
 
     scope_terms = _build_scope_terms(sales_ctx)
@@ -60,19 +66,35 @@ def _strengthen_closing_reply(
     sales_ctx: SalesContext,
 ) -> str:
     """Enhance closing-stage replies with explicit CTAs aligned to purchase signals."""
+    import structlog
+    _logger = structlog.get_logger(__name__)
+
+    _logger.debug('strengthening_closing_reply', stage=stage, signals=close_signals if close_signals else [])
     reply = ' '.join((reply_text or '').split()).strip()
-    if not reply or stage not in (STAGE_INTENT_TO_BUY, STAGE_CHECKOUT_BLOCKED):
-        return reply
-    if not close_signals:
+    if not reply or stage not in (STAGE_INTENT_TO_BUY, STAGE_CHECKOUT_BLOCKED, STAGE_CONSIDERING):
+        _logger.debug('skipping_cta_enhancement', stage=stage, reason='out_of_scope_or_empty')
         return reply
 
     lowered = reply.lower()
-    if any(token in lowered for token in ('prefieres', 'te lo dejo', 'lo dejamos listo', 'cerramos', 'te ayudo a dejarlo listo')):
+    already_closing = any(token in lowered for token in (
+        'prefieres', 'te lo dejo', 'lo dejamos listo', 'cerramos',
+        'te ayudo a dejarlo listo', 'lo separamos', 'lo reservamos', 'cual te llama',
+    ))
+    if already_closing or reply.endswith('?'):
         return reply
 
     product_title = products[0]['title'] if products else 'la opcion'
     payment_methods = sales_ctx.business.payment_methods or ['transferencia bancaria', 'efectivo']
     payment_label = ' o '.join(payment_methods[:2])
+
+    # Micro-close for CONSIDERING: soft CTA, no payment pressure yet
+    if stage == STAGE_CONSIDERING:
+        cta = 'Si alguna te convence, dime y la separamos ahora mismo. ¿Cual te llama mas?'
+        return f'{reply} {cta}'.strip()
+
+    # Hard close for INTENT_TO_BUY / CHECKOUT_BLOCKED
+    if not close_signals:
+        return reply
 
     if 'payment_intent' in close_signals:
         cta = f'Si te cuadra {product_title}, lo dejamos listo hoy. ¿Prefieres pagar por {payment_label}?'
@@ -81,8 +103,6 @@ def _strengthen_closing_reply(
     else:
         cta = f'Si esta es la opcion que te encaja, te ayudo a cerrarlo ahora mismo. ¿Te la dejo lista?'
 
-    if reply.endswith('?'):
-        return reply
     return f'{reply} {cta}'.strip()
 
 

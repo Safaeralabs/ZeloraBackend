@@ -115,8 +115,10 @@ def _llm_reply(
         import time as _time
         is_first = _conversation_user_message_count(conversation) <= 1
         chat_history = _build_chat_history_messages(conversation)
+        logger.debug('llm_reply_chat_history', message_count=len(chat_history) if chat_history else 0, is_first_message=is_first)
 
         # L4 — Retrieve conversation examples as few-shot learning
+        logger.debug('retrieving_few_shot_examples', stage=stage)
         examples = _retrieve_conversation_examples(
             message_text=message_text,
             stage=stage,
@@ -125,38 +127,68 @@ def _llm_reply(
         )
         examples_block = ''
         if examples:
+            logger.debug('few_shot_examples_found', count=len(examples))
             examples_lines = []
             for ex in examples:
                 examples_lines.append(
                     f"  Cliente: {ex['user_message']}\n  Agente: {ex['agent_reply']}"
                 )
             examples_block = '\n\nL4 EJEMPLOS DE CONVERSACIONES EXITOSAS:\n' + '\n\n'.join(examples_lines)
+        else:
+            logger.debug('no_few_shot_examples_found')
+
+        system_prompt = _build_system_prompt(sales_ctx, is_first_message=is_first)
+        context_block = _build_context_block(
+            stage=stage,
+            buyer=buyer,
+            products=products,
+            stock_info=stock_info,
+            promotions=promotions,
+            sales_ctx=sales_ctx,
+            conversation=conversation,
+            contact_memory=contact_memory,
+        ) + examples_block
+
+        messages_to_send = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'system', 'content': context_block},
+            *chat_history,
+            {'role': 'user', 'content': message_text},
+        ]
+
+        logger.debug(
+            'calling_openai_api',
+            model=model,
+            temperature=0.6,
+            max_tokens=180,
+            message_count=len(messages_to_send),
+            system_prompt_length=len(system_prompt),
+            context_block_length=len(context_block),
+        )
 
         t0 = _time.monotonic()
         completion = client.chat.completions.create(
             model=model,
-            messages=[
-                {'role': 'system', 'content': _build_system_prompt(sales_ctx, is_first_message=is_first)},
-                {'role': 'system', 'content': _build_context_block(
-                    stage=stage,
-                    buyer=buyer,
-                    products=products,
-                    stock_info=stock_info,
-                    promotions=promotions,
-                    sales_ctx=sales_ctx,
-                    conversation=conversation,
-                    contact_memory=contact_memory,
-                ) + examples_block},
-                *chat_history,
-                {'role': 'user', 'content': message_text},
-            ],
+            messages=messages_to_send,
             max_tokens=180,
             temperature=0.6,
         )
         latency_ms = int((_time.monotonic() - t0) * 1000)
+
+        llm_response = completion.choices[0].message.content or None
+        usage = completion.usage
+        logger.info(
+            'openai_api_response',
+            model=model,
+            latency_ms=latency_ms,
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+            total_tokens=usage.total_tokens if usage else 0,
+            response_preview=llm_response[:150] if llm_response else 'EMPTY',
+        )
+
         try:
             from apps.ai_engine.usage_tracker import track
-            usage = completion.usage
             track(
                 organization_id=str(sales_ctx.business.org_id),
                 feature='sales_agent',
@@ -165,9 +197,10 @@ def _llm_reply(
                 completion_tokens=usage.completion_tokens if usage else 0,
                 latency_ms=latency_ms,
             )
-        except Exception:
-            pass
-        return completion.choices[0].message.content or None
+        except Exception as track_exc:
+            logger.warning('usage_tracking_error', error=str(track_exc))
+
+        return llm_response
     except Exception as exc:
         logger.warning('sales_agent_llm_error', error=str(exc))
         return None
@@ -183,6 +216,7 @@ def _heuristic_reply(
     promotions: list[dict[str, Any]],
     sales_ctx: SalesContext,
 ) -> str:
+    logger.debug('heuristic_reply_triggered', stage=stage, objection=buyer.objection)
     text = message_text.lower()
     biz_ctx = sales_ctx.business
     brand_ctx = sales_ctx.brand
@@ -544,6 +578,18 @@ def _build_system_prompt(sales_ctx: SalesContext, *, is_first_message: bool = Fa
         'Cada respuesta debe empujar la conversacion hacia una decision concreta.\n'
         'Si el cliente se enfria o dice que luego vuelve, haz seguimiento comercial suave: resume la mejor opcion y cierra con una sola pregunta util.\n'
         'Nunca seas abusivo ni spam. No presiones con urgencia falsa.\n'
+        'VALIDACION EMOCIONAL: Cuando el cliente exprese duda, frustracion, urgencia o incertidumbre, valida su emocion con UNA frase corta antes de recomendar. Ejemplos: "Lo entiendo perfectamente", "Tiene todo el sentido dudarlo", "Es una decision importante". Nunca saltes directo al producto cuando hay una senal emocional clara.\n'
+        'PREGUNTAS ESTRATEGICAS: Cuando falte informacion clave para recomendar, haz UNA sola pregunta. Segun la etapa:\n'
+        '- discovering: "Es para ti o para regalo?", "Que uso le darias?", "Tienes algun presupuesto en mente?"\n'
+        '- considering: "Que priorizas mas: precio o durabilidad?", "Cual de las opciones te llamo mas la atencion?"\n'
+        '- intent_to_buy: "Lo necesitas urgente o puedes esperar el envio normal?", "Prefieres pagar todo ahora o en cuotas?"\n'
+        '- follow_up_needed: "Que es lo que mas te frena para decidirte hoy?"\n'
+        'ARQUETIPOS DE COMPRADOR — adapta tu estrategia segun el arquetipo del cliente indicado en el contexto:\n'
+        '- gift_buyer: valida emocionalmente, pregunta para quien es y que le gusta, sugiere opciones con narrativa de regalo\n'
+        '- deal_hunter: menciona promos activas primero, enfatiza relacion precio-valor, no insistas en premium\n'
+        '- impulse_buyer: simplifica la decision, da una sola opcion concreta, CTA directo y breve\n'
+        '- researcher: da especificaciones, comparativas, garantias; responde con precision, no con presion\n'
+        '- exploratory: descubre la necesidad con preguntas abiertas antes de recomendar\n'
         'Solo puedes usar informacion real del negocio. Nunca inventes precios, stock, politicas, tiempos de envio ni promociones.\n'
         'Si hay conflicto entre una politica publicada en Knowledge Base y un campo estructurado legacy, siempre debes priorizar Knowledge Base.\n'
         'Knowledge Base es la verdad operativa para pagos, envios, descuentos, devoluciones, inventario, restricciones y promesas permitidas. Los campos estructurados legacy solo son fallback.\n'
@@ -584,11 +630,47 @@ def _build_system_prompt(sales_ctx: SalesContext, *, is_first_message: bool = Fa
         f'Senales de bajo interes: {low_intent_signals}.\n'
         f'Regla de descuentos: {rules.discount_policy or "no definida"}.\n'
         f'Regla de negociacion: {rules.negotiation_policy or "no definida"}.\n'
-        f'Regla de inventario: {rules.inventory_promise_rule or "no definida"}.\n'
+        + (
+            'NEGOCIACION: Si el cliente pide descuento o precio especial, aplica primero la regla de negociacion anterior. '
+            'Intenta resolver ofreciendo: (1) la opcion mas economica del catalogo, (2) bundle o complemento, '
+            '(3) cuotas si aplica. Solo escala a humano si agotaste las opciones o el cliente insiste explicitamente.\n'
+            if rules.negotiation_policy else
+            'NEGOCIACION: Si el cliente pide descuento o precio especial y no tienes politica de negociacion definida, '
+            'indica amablemente que no manejas descuentos directos y ofrece la opcion de mejor valor disponible.\n'
+        )
+        + f'Regla de inventario: {rules.inventory_promise_rule or "no definida"}.\n'
         f'Regla de entrega: {rules.delivery_promise_rule or "no definida"}.\n'
         f'Resumen de devoluciones: {rules.return_policy_summary or "no definida"}.\n'
         f'Acciones prohibidas: {forbidden}.'
     )
+
+
+def _build_budget_constraint_line(buyer: BuyerProfile, contact_memory: dict[str, Any] | None) -> str:
+    """Build an explicit budget constraint line for the LLM context block (P.1)."""
+    budget_max = getattr(buyer, '_budget_max', None)
+    budget_min = getattr(buyer, '_budget_min', None)
+
+    # Prefer current-turn extracted budget over stored memory
+    if budget_max is None and contact_memory:
+        raw = contact_memory.get('inferred_budget_max')
+        budget_max = float(raw) if raw is not None else None
+    if budget_min is None and contact_memory:
+        raw = contact_memory.get('inferred_budget_min')
+        budget_min = float(raw) if raw is not None else None
+
+    if budget_max and budget_min:
+        return (
+            f'PRESUPUESTO CLIENTE: rango inferido ${budget_min:,.0f}–${budget_max:,.0f}. '
+            'No recomiendes productos fuera de este rango sin justificacion explicita.\n'
+        )
+    if budget_max:
+        return (
+            f'PRESUPUESTO CLIENTE: tope inferido ${budget_max:,.0f}. '
+            'Prioriza opciones dentro de ese rango. Si debes recomendar algo mas caro, justificalo primero.\n'
+        )
+    if budget_min:
+        return f'PRESUPUESTO CLIENTE: minimo inferido ${budget_min:,.0f}.\n'
+    return ''
 
 
 def _build_context_block(
@@ -679,8 +761,9 @@ def _build_context_block(
         f'Regla inventario: {rules.inventory_promise_rule or "no definida"}\n'
         f'Regla entrega: {rules.delivery_promise_rule or "no definida"}\n'
         f'Regla devoluciones: {rules.return_policy_summary or "no definida"}\n'
-        f'Comprador: prioridad={buyer.priority}, urgencia={buyer.urgency}, estilo={buyer.style}, objecion={buyer.objection or "ninguna"}, etapa={stage}\n'
+        f'Comprador: prioridad={buyer.priority}, urgencia={buyer.urgency}, estilo={buyer.style}, arquetipo={buyer.archetype}, objecion={buyer.objection or "ninguna"}, etapa={stage}\n'
         f'{contact_memory_line}'
+        f'{_build_budget_constraint_line(buyer, contact_memory)}'
         f'Regla de seguimiento: modo={prefs.get("followup_mode", "suave")} | max_followups={prefs.get("max_followups", 1)} | autonomia={prefs.get("autonomy_level", "semi_autonomo")} | recommendation_depth={prefs.get("recommendation_depth", 2)} | escalado={prefs.get("handoff_mode", "balanceado")}.\n'
         f'Marca: tono={brand.tone_of_voice}, formalidad={brand.formality_level}, personalidad={brand.brand_personality or "n/d"}, propuesta={brand.value_proposition or "n/d"}\n'
         f'Diferenciales marca: {", ".join(brand.key_differentiators[:4]) or "ninguno"}\n'
@@ -1001,6 +1084,7 @@ def _lookup_relevant_knowledge(
 
 
 def _apply_brand_voice(text: str, brand_ctx: BrandProfile, playbook: SalesPlaybook, stage: str) -> str:
+    logger.debug('applying_brand_voice', stage=stage, tone=brand_ctx.tone_of_voice, formality=brand_ctx.formality_level)
     cleaned = ' '.join((text or '').split())
     for phrase in brand_ctx.avoid_phrases:
         if isinstance(phrase, str) and phrase.strip():
@@ -1278,20 +1362,30 @@ def _generate_reply(
     Returns:
         Final reply text, ready to send
     """
+    logger.debug(
+        'generate_reply_start',
+        stage=stage,
+        channel=channel,
+        products_count=len(products) if products else 0,
+        buyer_archetype=buyer.archetype,
+    )
     try:
         from django.conf import settings as django_settings
 
         # Guard: never invent products when the organization has no active catalog.
         has_catalog_snapshot = bool(sales_ctx.catalog_snapshot)
+        # Strong guard: if no products found from lookup_products() AND it's a catalog request,
+        # show the empty catalog reply regardless of snapshot state (snapshot may be stale).
         if (
-            not has_catalog_snapshot
-            and not products
+            not products
             and _is_catalog_request(message_text, stage)
         ):
+            logger.debug('empty_catalog_guard_activated', has_snapshot=has_catalog_snapshot, stage=stage)
             return _empty_catalog_reply(sales_ctx, stage)
 
         # P2.1 Step 1: Sales Brain (existing _llm_reply)
         if django_settings.ENABLE_REAL_AI and django_settings.OPENAI_API_KEY:
+            logger.debug('calling_llm_reply')
             brain_reply = _llm_reply(
                 message_text=message_text,
                 stage=stage,

@@ -56,14 +56,34 @@ class SalesAgent:
     def run(self, *, message_text: str, conversation, organization, router_decision=None) -> SalesAgentResult:
         from .sales_tools import check_stock, get_active_promotions, get_order_history, lookup_products
 
+        # Setup structured logging context
+        conv_id = str(getattr(conversation, 'id', 'unknown')) if conversation else 'no_conversation'
+        org_id = str(getattr(organization, 'id', 'unknown'))
+        log_ctx = {
+            'conversation_id': conv_id,
+            'organization_id': org_id,
+            'message_text': message_text[:200],
+            'router_decision': str(router_decision) if router_decision else None,
+        }
+        logger.info('sales_agent_run_start', **log_ctx)
+
         text = message_text.lower()
         sales_ctx = _load_sales_context(organization)
+        logger.debug('sales_context_loaded', org_name=sales_ctx.business.org_name, agent_name=sales_ctx.agent_name)
 
         # P3.1: Load contact memory for cross-conversation context
         contact = getattr(conversation, 'contact', None)
         contact_memory = _load_contact_memory(contact) if contact else {}
+        logger.debug(
+            'contact_memory_loaded',
+            contact_id=str(contact.id) if contact else None,
+            has_prior_interactions=contact_memory.get('has_prior_interactions', False),
+            conversation_count=contact_memory.get('conversation_count', 0),
+            converted=contact_memory.get('converted', False),
+        )
 
         if sales_ctx.agent_preferences.get('enabled', True) is False:
+            logger.warning('sales_agent_disabled', org_id=org_id)
             return SalesAgentResult(
                 stage=STAGE_DISCOVERING,
                 confidence=1.0,
@@ -77,6 +97,7 @@ class SalesAgent:
             from apps.flows.engine import FlowEngine
             _engine = FlowEngine()
             _channel = getattr(conversation, 'canal', 'web') or 'web'
+            logger.debug('db_flow_engine_start', channel=_channel)
             _db_result = _engine.advance(
                 conversation=conversation,
                 message_text=message_text,
@@ -110,6 +131,14 @@ class SalesAgent:
                 _flow_stage = STAGE_HUMAN_HANDOFF if _db_result.handoff else (
                     STAGE_CLOSED_WON if _db_result.completed else STAGE_DISCOVERING
                 )
+                logger.info(
+                    'db_flow_handled_request',
+                    flow_id=_db_result.flow_id,
+                    flow_name=_db_result.flow_name,
+                    stage=_flow_stage,
+                    handoff=_db_result.handoff,
+                    completed=_db_result.completed,
+                )
                 return SalesAgentResult(
                     stage=_flow_stage,
                     confidence=0.97,
@@ -136,15 +165,31 @@ class SalesAgent:
                     },
                 )
         except Exception as _flow_exc:
-            logger.warning('db_flow_engine_error', error=str(_flow_exc))
+            logger.warning('db_flow_engine_error', error=str(_flow_exc), exc_info=True)
 
         # Legacy hardcoded Comfaguajira flows removed — superseded by DB-driven flows
+        logger.debug('classifying_stage_and_buyer')
         stage, confidence = _classify_stage(text, sales_ctx.buyer_model)
+        logger.debug('stage_classified', stage=stage, confidence=confidence)
         buyer = _profile_buyer(text, sales_ctx.buyer_model, stage=stage)
+        logger.debug(
+            'buyer_profiled',
+            priority=buyer.priority,
+            urgency=buyer.urgency,
+            objection=buyer.objection,
+            style=buyer.style,
+            archetype=buyer.archetype,
+            quantity=buyer.quantity,
+            budget_max=getattr(buyer, '_budget_max', None),
+            budget_min=getattr(buyer, '_budget_min', None),
+        )
         close_signals = _detect_close_signals(text)
-        handoff = _check_handoff(text, buyer, sales_ctx.business, sales_ctx.playbook)
+        logger.debug('close_signals_detected', signals=close_signals)
+        handoff = _check_handoff(text, buyer, sales_ctx.business, sales_ctx.playbook, sales_ctx.commerce_rules)
+        logger.debug('handoff_checked', needed=handoff.needed, reason=handoff.reason)
 
         if handoff.needed:
+            logger.info('escalating_to_human', handoff_reason=handoff.reason, stage=stage)
             return SalesAgentResult(
                 stage=stage,
                 confidence=confidence,
@@ -160,24 +205,37 @@ class SalesAgent:
                 buyer_profile=buyer,
             )
 
+        logger.debug('looking_up_products', query=message_text[:100])
         products = lookup_products(organization, message_text)
+        logger.debug('products_found', count=len(products) if products else 0)
+
         promotions = get_active_promotions(organization)
+        logger.debug('promotions_loaded', count=len(promotions) if promotions else 0)
 
         # P1.3: Score and rank products (top 3) using composite recommendation engine
         # P3.2: Include organization_id for product graph lookup
         from .recommendation import score_and_rank_products
+        prior_shown = contact_memory.get('last_products_shown', []) if isinstance(contact_memory, dict) else []
+        logger.debug('scoring_products', total=len(products) if products else 0, prior_shown=len(prior_shown))
         products = score_and_rank_products(
             products, buyer, stage, promotions, message_text,
             organization_id=str(organization.id),
-            prior_product_ids=contact_memory.get('last_products_shown', []) if isinstance(contact_memory, dict) else [],
+            prior_product_ids=prior_shown,
         )
+        logger.debug('products_ranked', top_3=[p.get('id') for p in products[:3]] if products else [])
 
         contact = getattr(conversation, 'contact', None)
         order_history = get_order_history(organization, contact) if contact else []
+        logger.debug('order_history_loaded', count=len(order_history) if order_history else 0)
+
         stock_info = None
         if products and stage in (STAGE_INTENT_TO_BUY, STAGE_CHECKOUT_BLOCKED):
-            stock_info = check_stock(organization, products[0]['id'])
+            top_product_id = products[0]['id']
+            logger.debug('checking_stock', product_id=top_product_id)
+            stock_info = check_stock(organization, top_product_id)
+            logger.debug('stock_checked', in_stock=stock_info.get('any_in_stock') if stock_info else None)
 
+        logger.debug('generating_reply', stage=stage, channel=_channel, products_count=len(products) if products else 0)
         reply_text = _generate_reply(
             message_text=message_text,
             stage=stage,
@@ -191,12 +249,17 @@ class SalesAgent:
             channel=_channel,  # P2.1 & P2.3: pass channel for adaptation
             contact_memory=contact_memory,  # P3.1: pass contact memory for context
         )
+        logger.debug('reply_generated', length=len(reply_text) if reply_text else 0, preview=reply_text[:100] if reply_text else '')
+
+        logger.debug('enforcing_reply_scope', stage=stage)
         reply_text = _enforce_reply_scope(
             message_text=message_text,
             reply_text=reply_text,
             sales_ctx=sales_ctx,
             stage=stage,
         )
+
+        logger.debug('strengthening_closing_reply', stage=stage, has_close_signals=bool(close_signals))
         reply_text = _strengthen_closing_reply(
             reply_text=reply_text,
             stage=stage,
@@ -204,18 +267,24 @@ class SalesAgent:
             products=products,
             sales_ctx=sales_ctx,
         )
+        logger.debug('reply_final', length=len(reply_text) if reply_text else 0)
         actions = _build_actions(stage, message_text, products, promotions, buyer, sales_ctx.business, sales_ctx, close_signals)
+        logger.debug('actions_built', count=len(actions) if actions else 0, actions=[a.action_type for a in actions] if actions else [])
 
-        if sales_ctx.agent_preferences.get('followup_mode', 'suave') != 'apagado' and stage in (STAGE_FOLLOW_UP_NEEDED, STAGE_CONSIDERING):
+        followup_mode = sales_ctx.agent_preferences.get('followup_mode', 'suave')
+        if followup_mode != 'apagado' and stage in (STAGE_FOLLOW_UP_NEEDED, STAGE_CONSIDERING):
+            logger.debug('creating_followup_task', stage=stage, mode=followup_mode)
             _create_followup_task(conversation, organization, stage, message_text, buyer)
 
         # P3.1: Update contact memory with this turn's data
+        logger.debug('updating_contact_memory', contact_id=str(contact.id) if contact else None)
         _update_contact_memory(contact, organization, buyer, products, stage)
 
-        return SalesAgentResult(
+        decision = _derive_decision(stage, products, buyer)
+        result = SalesAgentResult(
             stage=stage,
             confidence=confidence,
-            decision=_derive_decision(stage, products, buyer),
+            decision=decision,
             recommended_actions=actions,
             reply_text=reply_text,
             handoff=HandoffDecision(needed=False),
@@ -240,6 +309,26 @@ class SalesAgent:
                 'business_constraints_applied': True,
             },
         )
+        logger.info(
+            'sales_agent_run_complete',
+            stage=stage,
+            decision=decision,
+            confidence=confidence,
+            products_shown=len(result.products_shown) if result.products_shown else 0,
+            actions_count=len(actions) if actions else 0,
+        )
+        return result
+
+
+def _classify_buyer_archetype(style: str, priority: str, urgency: str) -> str:
+    """Classify buyer into a named archetype that shapes the overall sales strategy."""
+    if priority == 'price' and style == 'comparative':
+        return 'deal_hunter'
+    if style == 'direct' and urgency == 'immediate':
+        return 'impulse_buyer'
+    if style == 'comparative' and priority == 'quality':
+        return 'researcher'
+    return 'exploratory'
 
 
 def _infer_objection_reason(text: str) -> str | None:
@@ -327,12 +416,16 @@ def _profile_buyer(text: str, buyer_model: dict[str, Any] | None = None, stage: 
     elif any(token in text for token in ('comparar', 'diferencia', 'cual', 'entre', 'opciones')):
         style = 'comparative'
 
-    profile = BuyerProfile(priority=priority, quantity=quantity, urgency=urgency, objection=objection, style=style)
+    archetype = _classify_buyer_archetype(style, priority, urgency)
+
+    profile = BuyerProfile(priority=priority, quantity=quantity, urgency=urgency, objection=objection, style=style, archetype=archetype)
 
     # P3.1: lightweight memory signals for later persistence
     occasion_hints = _extract_occasion_hints(text)
     if occasion_hints:
         profile._occasion_hints = occasion_hints
+        if 'regalo' in occasion_hints:
+            profile.archetype = 'gift_buyer'
     budget_min, budget_max = _extract_budget_range(text)
     if budget_min is not None:
         profile._budget_min = budget_min
@@ -346,35 +439,62 @@ def _classify_stage(text: str, buyer_model: dict[str, Any] | None = None) -> tup
     if isinstance(buyer_model, dict):
         for signal in buyer_model.get('bulk_buyer_signals', []):
             if isinstance(signal, str) and signal.lower() in text:
+                logger.debug('stage_matched_via_buyer_model', stage=STAGE_INTENT_TO_BUY, signal='bulk_buyer_signal')
                 return STAGE_INTENT_TO_BUY, 0.86
         for signal in buyer_model.get('purchase_signals', []):
             if isinstance(signal, str) and signal.lower() in text:
+                logger.debug('stage_matched_via_buyer_model', stage=STAGE_INTENT_TO_BUY, signal='purchase_signal')
                 return STAGE_INTENT_TO_BUY, 0.90
         for signal in buyer_model.get('low_intent_signals', []):
             if isinstance(signal, str) and signal.lower() in text:
+                logger.debug('stage_matched_via_buyer_model', stage=STAGE_FOLLOW_UP_NEEDED, signal='low_intent_signal')
                 return STAGE_FOLLOW_UP_NEEDED, 0.72
 
     for stage, signals in _STAGE_SIGNALS.items():
         if any(signal in text for signal in signals):
-            return stage, 0.88 if stage == STAGE_INTENT_TO_BUY else 0.80
+            confidence = 0.88 if stage == STAGE_INTENT_TO_BUY else 0.80
+            logger.debug('stage_matched_via_heuristic', stage=stage, confidence=confidence)
+            return stage, confidence
+    logger.debug('stage_defaulted', stage=STAGE_DISCOVERING, confidence=0.60)
     return STAGE_DISCOVERING, 0.60
 
 
-def _check_handoff(text: str, buyer: BuyerProfile, biz_ctx: BusinessContext, playbook) -> HandoffDecision:
+def _check_handoff(text: str, buyer: BuyerProfile, biz_ctx: BusinessContext, playbook, commerce_rules=None) -> HandoffDecision:
     handoff_mode = getattr(playbook, 'handoff_mode', 'balanceado')
+    negotiation_policy = getattr(commerce_rules, 'negotiation_policy', '') if commerce_rules else ''
+
     for signal in _NEGOTIATION_SIGNALS:
         if signal in text:
+            logger.debug('negotiation_signal_detected', signal=signal, has_policy=bool(negotiation_policy))
+            # If a negotiation policy exists, let the LLM handle it first via the system prompt.
+            # Only escalate immediately when there is no policy to guide the conversation.
+            if negotiation_policy:
+                logger.debug('negotiation_handled_by_llm', reason='negotiation_policy_exists')
+                break  # fall through — LLM will apply the negotiation_policy via system prompt
+            logger.info('escalating_for_negotiation', signal=signal)
             return HandoffDecision(needed=True, reason=f'negotiation_request:{signal}')
+
     for signal in playbook.escalate_conditions:
         if isinstance(signal, str) and signal.strip() and signal.lower() in text:
+            logger.info('escalating_for_playbook_condition', signal=signal)
             return HandoffDecision(needed=True, reason=f'playbook_escalation:{signal}')
+
     if handoff_mode == 'temprano' and buyer.objection in {'trust', 'availability'}:
+        logger.info('escalating_early_mode', objection=buyer.objection)
         return HandoffDecision(needed=True, reason=f'early_handoff:{buyer.objection}')
+
     if buyer.quantity == 'bulk':
+        logger.info('escalating_bulk_order')
         return HandoffDecision(needed=True, reason='bulk_order_requires_human_approval')
+
     match = re.search(r'\b(\d+)\s*(?:unidades?|piezas?|articulos?|items?|pares?|cajas?|paquetes?|docenas?)\b', text)
-    if match and int(match.group(1)) > biz_ctx.max_units_auto_approve:
-        return HandoffDecision(needed=True, reason=f'order_quantity_exceeds_auto_limit_{biz_ctx.max_units_auto_approve}')
+    if match:
+        qty = int(match.group(1))
+        if qty > biz_ctx.max_units_auto_approve:
+            logger.info('escalating_high_volume_order', qty=qty, auto_limit=biz_ctx.max_units_auto_approve)
+            return HandoffDecision(needed=True, reason=f'order_quantity_exceeds_auto_limit_{biz_ctx.max_units_auto_approve}')
+
+    logger.debug('handoff_check_passed', handoff_mode=handoff_mode)
     return HandoffDecision(needed=False)
 
 
@@ -395,6 +515,7 @@ def _detect_close_signals(text: str) -> list[str]:
     signals: list[str] = []
     if any(token in text for token in ('quiero comprar', 'lo quiero', 'quiero pedir', 'me lo llevo', 'quiero ese', 'quiero este')):
         signals.append('explicit_buy_intent')
+        logger.debug('close_signal_detected', signal='explicit_buy_intent')
     if any(token in text for token in ('como pago', 'metodos de pago', 'formas de pago', 'transferencia', 'efectivo', 'pse', 'tarjeta')):
         signals.append('payment_intent')
     if any(token in text for token in ('disponible', 'tienen', 'hay', 'en stock', 'queda')):
