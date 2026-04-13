@@ -32,7 +32,7 @@ class DecisionEngine:
             'response_strategy': 'discover',
         },
         ('confused_customer', 'discovery'): {
-            'fetch_products': False,
+            'fetch_products': True,  # search with accumulated attributes
             'fetch_kb': ['faq'],
             'fetch_promotions': False,
             'response_strategy': 'clarify',

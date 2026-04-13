@@ -93,73 +93,94 @@ class ResponseGenerator:
             System prompt string
         """
         org = session.organization
+        has_products = bool(context.get('recommended_products'))
 
         lines = [
-            f'You are {org.name}\'s sales agent.',
-            'Respond naturally, concisely, and helpfully.',
-            'Channel: app (max 3 sentences, short and scannable).',
+            f'Eres el agente de ventas de {org.name}. Respondes en español, de forma natural y concisa.',
+            'Canal: app (máximo 2-3 oraciones, directo al punto).',
+            'Responde SIEMPRE en español.',
             '',
-            '## Rules (ALWAYS follow)',
-            '- NEVER invent products, prices, or facts',
-            '- If you mention a product, use ONLY data provided in Products section',
-            '- Never discuss competitors or politics',
-            '- Max 2 product recommendations at once',
-            '- If out of scope, redirect kindly in 1 sentence',
-            '',
-            '## Current Context',
-            f'Customer stage: {session.stage}',
-            f'Situation: {situation}',
-            f'Strategy: {action.get("response_strategy", "default")}',
+            '## REGLAS ABSOLUTAS — nunca las rompas',
+            '- SOLO puedes hablar de productos que aparecen en la sección "## Productos disponibles" de este prompt.',
+            '- Si esa sección está vacía o no tiene lo que el cliente pide: dile claramente que no tienes ese producto.',
+            '- NUNCA inventes productos, marcas, modelos, precios, materiales ni características.',
+            '- NUNCA digas "estaré atento" ni "lo buscaré" — si no está en el catálogo, no lo tienes.',
+            '- Si el cliente pregunta algo fuera de ventas (historia, noticias, política, etc.): una sola oración amable redirigiéndolo.',
+            '- Máximo 2 productos mencionados por turno.',
+            '- No hables de competidores.',
             '',
         ]
 
-        # Add session state summary
+        # Explicit instruction when no products in context
+        if not has_products:
+            lines += [
+                '## IMPORTANTE: Sin productos disponibles',
+                'No hay productos en el catálogo que coincidan con lo que el cliente pide.',
+                'Dile honestamente que no tienes ese producto específico.',
+                'Puedes preguntar si le interesa ver otras opciones similares que sí tenemos.',
+                '',
+            ]
+
+        lines += [
+            '## Contexto actual',
+            f'Etapa: {session.stage}',
+            f'Situación: {situation}',
+            f'Estrategia: {action.get("response_strategy", "default")}',
+            '',
+        ]
+
+        # Session state
+        state_lines = []
         if session.selected_products:
-            lines.append(f'Customer selected: {len(session.selected_products)} products')
+            state_lines.append(f'Productos seleccionados: {len(session.selected_products)}')
         if session.budget_min or session.budget_max:
-            lines.append(f'Budget: ${session.budget_min or "?"}-${session.budget_max or "?"}')
+            state_lines.append(f'Presupuesto: ${session.budget_min or "?"}-${session.budget_max or "?"}')
         if session.objections:
-            lines.append(f'Objections: {", ".join(session.objections[:2])}')
+            state_lines.append(f'Objeciones: {", ".join(session.objections[:2])}')
+        if session.category_interest:
+            state_lines.append(f'Categoría de interés: {session.category_interest}')
+        if state_lines:
+            lines += state_lines + ['']
 
-        lines.append('')
-
-        # Add KB context if provided
+        # KB content
         if context.get('kb_content'):
-            lines.append('## Relevant Info')
+            lines.append('## Información relevante')
             lines.append(context['kb_content'][:500])
             lines.append('')
 
-        # Add products if provided
-        if context.get('recommended_products'):
-            lines.append('## Available Products')
+        # Products — the source of truth
+        if has_products:
+            lines.append('## Productos disponibles (SOLO estos puedes mencionar)')
             for product in context['recommended_products'][:3]:
-                price_str = f"${product['price_min']}" if product.get('price_min') else "Contact for price"
-                lines.append(f"- {product['title']}: {price_str}")
+                price_str = f"${product['price_min']}" if product.get('price_min') else "Consultar precio"
+                desc = product.get('description', '')[:80]
+                lines.append(f"- **{product['title']}**: {price_str}")
+                if desc:
+                    lines.append(f"  {desc}")
                 if product.get('promotion'):
-                    promo = product['promotion']
-                    lines.append(f"  Promo: {promo['title']}")
+                    lines.append(f"  Promoción: {product['promotion']['title']}")
             lines.append('')
 
-        # Add promotions if applicable
+        # Promotions
         if context.get('promotions'):
-            lines.append('## Active Promotions')
+            lines.append('## Promociones activas')
             for promo in context['promotions'][:2]:
-                lines.append(f"- {promo['title']}: {promo['description'][:50]}")
+                lines.append(f"- {promo['title']}: {promo['description'][:60]}")
             lines.append('')
 
-        # Add strategy guidance
+        # Strategy guidance
         strategy_guidance = {
-            'discover': 'Ask what they\'re looking for, understand needs.',
-            'recommend': 'Suggest 1-2 best matches from available products.',
-            'close': 'Move toward checkout, remove friction, confirm intent.',
-            'inform': 'Provide requested information clearly and concisely.',
-            'clarify': 'Ask clarifying questions to understand their needs better.',
-            'redirect': 'Kindly explain you only help with our products, offer to help if relevant.',
+            'discover': 'Muestra 1-2 productos disponibles del catálogo. Si el cliente dio preferencias, muestra los que más encajan.',
+            'recommend': 'Recomienda 1-2 productos SOLO del listado de productos disponibles. Menciona precio y característica clave.',
+            'close': 'Enfócate en cerrar la venta. Pregunta si quiere proceder.',
+            'inform': 'Da la información solicitada de forma clara y concisa.',
+            'clarify': 'Haz UNA sola pregunta para entender mejor qué necesita.',
+            'redirect': 'En una oración, explica que solo puedes ayudar con los productos de la tienda.',
         }
 
         strategy = action.get('response_strategy', 'discover')
         if strategy in strategy_guidance:
-            lines.append(f'## Strategy: {strategy_guidance[strategy]}')
+            lines.append(f'## Estrategia: {strategy_guidance[strategy]}')
 
         return '\n'.join(lines)
 

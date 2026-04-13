@@ -47,24 +47,33 @@ class CatalogService:
             is_active=True,
         )
 
-        # Try semantic search first (if embeddings exist)
+        # Keyword search across all relevant product fields including attributes
         products = []
         try:
             from django.db.models import Q
-            # For now, use simple keyword search
-            # (Semantic search would need query embedding + numpy cosine)
-            words = query.lower().split()[:3]
+            words = [w for w in query.lower().split() if len(w) > 2][:6]
             q_filter = Q()
             for word in words:
-                q_filter |= Q(title__icontains=word) | \
-                           Q(brand__icontains=word) | \
-                           Q(category__icontains=word) | \
-                           Q(description__icontains=word)
+                q_filter |= (
+                    Q(title__icontains=word) |
+                    Q(brand__icontains=word) |
+                    Q(category__icontains=word) |
+                    Q(subcategory__icontains=word) |
+                    Q(description__icontains=word) |
+                    Q(color__icontains=word) |
+                    Q(material__icontains=word) |
+                    Q(style__icontains=word) |
+                    Q(formality__icontains=word) |
+                    Q(fit__icontains=word)
+                )
 
-            products = list(qs.filter(q_filter)[:limit * 2])
+            if q_filter:
+                products = list(qs.filter(q_filter).order_by('-is_bestseller', '-popularity_score')[:limit * 2])
+            else:
+                products = list(qs.order_by('-is_bestseller', '-popularity_score')[:limit * 2])
         except Exception as e:
-            logger.warning(f'Semantic search failed: {e}, falling back to keyword')
-            products = list(qs[:limit * 2])
+            logger.warning(f'Product search failed: {e}')
+            products = []
 
         # Avoid showing products already shown in session
         if session:

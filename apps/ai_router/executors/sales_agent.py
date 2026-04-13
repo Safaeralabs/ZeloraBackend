@@ -85,7 +85,7 @@ class SalesAgentExecutor(BaseExecutor):
             logger.info(f'Detected situation: {situation}')
 
             # ===== 4. Decide what to do (pure logic) =====
-            action = DecisionEngine.decide(situation, session)
+            action = DecisionEngine.decide(situation, session.stage)
             logger.info(f'Decision: {action}')
 
             # ===== 5a. Handoff check =====
@@ -94,12 +94,21 @@ class SalesAgentExecutor(BaseExecutor):
                 reply = HandoffHandler.escalate(conversation, session, organization, reason)
                 return reply
 
-            # ===== 5b. Load context based on decision =====
+            # ===== 5b. Build accumulated query from recent user messages =====
+            # Combines current message + past user turns so attributes like
+            # "blancos", "formales", "gamuza" accumulate into a richer search query
+            user_messages = [
+                msg.content for msg in history_objs
+                if msg.role == 'user'
+            ][-4:]  # last 4 user turns (list slice — OK)
+            accumulated_query = ' '.join(user_messages + [message_text])
+
+            # ===== 5c. Load context based on decision =====
             context = self._load_context(
                 action=action,
                 session=session,
                 organization=organization,
-                message_text=message_text,
+                message_text=accumulated_query,
             )
 
             # ===== 6. Generate response (LLM) =====
@@ -157,19 +166,29 @@ class SalesAgentExecutor(BaseExecutor):
         }
 
         try:
-            # Fetch products if requested
-            if action.get('fetch_products'):
-                strategy = action.get('response_strategy', 'discover')
+            # Always search products if:
+            # a) action explicitly requests it, OR
+            # b) session already has category_interest (client has been giving attributes)
+            should_fetch_products = (
+                action.get('fetch_products')
+                or bool(session.category_interest)
+            )
 
-                # If specific product search
-                if strategy == 'discover' or strategy == 'recommend':
-                    products = CatalogService.search(
-                        query=message_text,
-                        organization=organization,
-                        session=session,
-                        limit=5,
-                    )
-                    context['recommended_products'] = products
+            if should_fetch_products:
+                # Build enriched query combining current message + session accumulated context
+                query_parts = [message_text]
+                if session.category_interest:
+                    query_parts.append(session.category_interest)
+
+                enriched_query = ' '.join(filter(None, query_parts))
+
+                products = CatalogService.search(
+                    query=enriched_query,
+                    organization=organization,
+                    session=session,
+                    limit=5,
+                )
+                context['recommended_products'] = products
 
                 # Build recommendations if we have base products
                 if session.selected_products:
@@ -178,10 +197,7 @@ class SalesAgentExecutor(BaseExecutor):
                         session=session,
                         organization=organization,
                     )
-                    # Add recommendation details to context for prompt inclusion
                     if rec_set.get('primary'):
-                        if not context['recommended_products']:
-                            context['recommended_products'] = []
                         context['recommended_products'].insert(0, rec_set['primary'])
 
             # Fetch KB if requested
