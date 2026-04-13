@@ -558,6 +558,17 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
         metadata={'source': source, 'intent': intent},
     )
 
+    # Create bot message with AI reply if one was generated
+    # (This happens even if being escalated - we want to show the "escalating..." message)
+    bot_message = None
+    if bot_reply_text:
+        bot_message = Message.objects.create(
+            conversation=conversation,
+            role='bot',
+            content=bot_reply_text,
+            metadata={'source': source, 'intent': intent, 'generated_by': 'ai_router'},
+        )
+
     # Reload conversation from DB to get any metadata changes from escalation
     conversation.refresh_from_db()
 
@@ -565,17 +576,6 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
     def _is_human_owned(conv) -> bool:
         metadata = conv.metadata or {}
         return (metadata.get('operator_state') or {}).get('owner') == 'humano'
-
-    # Only create bot message if conversation is still AI-owned
-    # If escalated to human, suppress bot response
-    bot_message = None
-    if not _is_human_owned(conversation) and bot_reply_text:
-        bot_message = Message.objects.create(
-            conversation=conversation,
-            role='bot',
-            content=bot_reply_text,
-            metadata={'source': source, 'intent': intent, 'generated_by': 'ai_router'},
-        )
 
     try:
         from channels.layers import get_channel_layer
@@ -602,7 +602,7 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
                 'conversation': conversation_payload,
             },
         )
-        # Only broadcast bot message if one was created (not escalated to human)
+        # Broadcast bot message
         if bot_message:
             async_to_sync(channel_layer.group_send)(
                 f'org_{conversation.organization_id}',
@@ -613,12 +613,42 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
                     'conversation': conversation_payload,
                 },
             )
+
+        # If escalated, also broadcast any system messages (e.g., "Conectado con un asesor")
+        if _is_human_owned(conversation):
+            from apps.conversations.models import Message as MessageModel
+            system_messages = MessageModel.objects.filter(
+                conversation=conversation,
+                role='system'
+            ).order_by('timestamp')
+            for sys_msg in system_messages:
+                async_to_sync(channel_layer.group_send)(
+                    f'org_{conversation.organization_id}',
+                    {
+                        'type': 'conversation.message',
+                        'conversation_id': str(conversation.id),
+                        'message': MessageSerializer(sys_msg).data,
+                        'conversation': conversation_payload,
+                    },
+                )
     except Exception:
         pass
 
     _broadcast_public_appchat_message(conversation, user_message)
     if bot_message:
         _broadcast_public_appchat_message(conversation, bot_message)
+
+    # Broadcast system messages to appchat
+    if _is_human_owned(conversation):
+        from apps.conversations.models import Message as MessageModel
+        system_messages = MessageModel.objects.filter(
+            conversation=conversation,
+            role='system'
+        ).order_by('timestamp')
+        for sys_msg in system_messages:
+            _broadcast_public_appchat_message(conversation, sys_msg)
+
+    if bot_message:
         _broadcast_public_webchat_message(conversation, bot_message)
     # Build messages array: always include user message, bot message only if created
     messages_list = [
