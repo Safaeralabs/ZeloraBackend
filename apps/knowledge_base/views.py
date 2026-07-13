@@ -21,10 +21,30 @@ class KBArticleViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         return KBArticle.objects.filter(organization=self.request.user.organization)
 
     def perform_create(self, serializer):
-        serializer.save(
+        article = serializer.save(
             organization=self.request.user.organization,
             author=self.request.user,
         )
+        self._refresh_embedding(article)
+
+    def perform_update(self, serializer):
+        article = serializer.save()
+        self._refresh_embedding(article)
+
+    @staticmethod
+    def _refresh_embedding(article):
+        """Best-effort embedding so the sales agent can retrieve semantically."""
+        try:
+            from django.conf import settings
+            if not settings.OPENAI_API_KEY or not getattr(settings, 'ENABLE_REAL_AI', False):
+                return
+            from apps.ai_engine.sales_kb import _embed_query
+            vector = _embed_query(f'{article.title}\n{article.content}'[:2000], str(article.organization_id))
+            if vector:
+                article.embedding_vector = vector
+                article.save(update_fields=['embedding_vector', 'updated_at'])
+        except Exception:
+            pass  # embeddings are an enhancement, never block saving
 
     @action(detail=True, methods=['post'])
     def visit(self, request, pk=None):

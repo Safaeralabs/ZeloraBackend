@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Product, ProductVariant, Order, InventoryMovement
+from .models import Product, ProductVariant, Order, OrderLineItem, OrderEvent, InventoryMovement
 
 
 class ProductVariantInline(admin.TabularInline):
@@ -17,17 +17,32 @@ class ProductAdmin(admin.ModelAdmin):
     inlines = [ProductVariantInline]
 
 
+class OrderLineItemInline(admin.TabularInline):
+    model = OrderLineItem
+    extra = 0
+    fields = ['title', 'sku', 'quantity', 'unit_price', 'discount', 'offer_type']
+    readonly_fields = ['id']
+
+
+class OrderEventInline(admin.TabularInline):
+    model = OrderEvent
+    extra = 0
+    fields = ['event_type', 'message', 'actor', 'created_at']
+    readonly_fields = ['id', 'created_at']
+
+
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ['short_id', 'customer_name', 'channel', 'status', 'total', 'currency', 'organization', 'created_at']
-    list_filter = ['status', 'channel', 'organization']
-    search_fields = ['customer_name']
-    readonly_fields = ['id', 'created_at', 'updated_at']
+    list_display = ['display_number', 'customer_name', 'channel', 'status', 'payment_status', 'total', 'currency', 'organization', 'created_at']
+    list_filter = ['status', 'payment_status', 'fulfillment_status', 'channel', 'organization']
+    search_fields = ['customer_name', 'tracking_number']
+    readonly_fields = ['id', 'order_number', 'created_at', 'updated_at']
     date_hierarchy = 'created_at'
+    inlines = [OrderLineItemInline, OrderEventInline]
 
-    def short_id(self, obj):
-        return str(obj.id)[:8]
-    short_id.short_description = 'ID'
+    def display_number(self, obj):
+        return f'#{obj.order_number:04d}' if obj.order_number else str(obj.id)[:8]
+    display_number.short_description = '#'
 
 
 @admin.register(InventoryMovement)

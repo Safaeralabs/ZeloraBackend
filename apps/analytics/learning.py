@@ -133,9 +133,18 @@ def _detect_conflicting_articles(org, candidate_content: str, candidate_title: s
         return []
 
 
-def approve_learning_candidate(*, candidate: LearningCandidate, author=None) -> KBArticle:
+def approve_learning_candidate(*, candidate: LearningCandidate, author=None) -> KBArticle | None:
     meta = candidate.metadata or {}
     is_llm = meta.get('source') == 'llm'
+
+    if candidate.kind in ('conversation_example', 'winning_reply'):
+        # Example-bank candidates stay as approved LearningCandidates: the
+        # ExampleBank retrieves them as few-shot by stage/similarity, and
+        # flattening them into FAQ articles would lose the stage/outcome
+        # metadata while polluting FAQ retrieval.
+        candidate.status = 'approved'
+        candidate.save(update_fields=['status', 'updated_at'])
+        return None
 
     if candidate.kind == 'estilo_comunicacion':
         # Style candidates update brand config directly instead of creating a KB article.
@@ -146,7 +155,9 @@ def approve_learning_candidate(*, candidate: LearningCandidate, author=None) -> 
             f'{candidate.proposed_answer}'
         ).strip()
         category = 'Estilo de comunicación'
-        purpose = 'brand_voice'
+        # 'brand_voice' was consolidated into 'business' (migration 0004);
+        # only canonical purposes are retrievable by the sales agent.
+        purpose = 'business'
         tags = sorted({'estilo', 'auto_learning', 'customer_style'})
         embedding = meta.get('embedding', [])
     elif is_llm:
@@ -161,7 +172,9 @@ def approve_learning_candidate(*, candidate: LearningCandidate, author=None) -> 
             f'Respuesta sugerida:\n{candidate.proposed_answer}'
         ).strip()
         category = 'Objeciones detectadas'
-        purpose = 'objection'
+        # 'objection' was consolidated into 'sales_scripts' (migration 0004);
+        # this is what the agent loads when handling objections/closing.
+        purpose = 'sales_scripts'
         tags = sorted(set([candidate.kind, 'auto_learning', 'conversation_memory']))
         embedding = []
     else:

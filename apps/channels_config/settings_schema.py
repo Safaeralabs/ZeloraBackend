@@ -85,6 +85,7 @@ def _v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
             'recommended_phrases': brand_cfg.get('recommended_phrases') or [],
             'avoid_phrases': brand_cfg.get('avoid_phrases') or [],
             'customer_style_notes': brand_cfg.get('customer_style_notes') or '',
+            'voice_examples': _coerce_str_list(brand_cfg.get('voice_examples')),
         },
     }
 
@@ -139,6 +140,7 @@ def _v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
         'shipping_policy': sales_profile.get('shipping_policy') or rules_cfg.get('shipping_policy') or '',
         'shipping_coverage': raw.get('shipping_coverage') or '',
         'shipping_avg_days': raw.get('shipping_avg_days') or '',
+        'ships_same_day': bool(raw.get('ships_same_day', False)),
         'min_order_units': int(raw.get('min_order_units') or 1),
         'max_units_auto_approve': int(raw.get('max_units_auto_approve') or 10),
         'returns_window_days': int(raw.get('returns_window_days') or 15),
@@ -211,6 +213,7 @@ _BRAND_DEFAULTS: dict[str, Any] = {
     'recommended_phrases': [],
     'avoid_phrases': [],
     'customer_style_notes': '',
+    'voice_examples': [],
 }
 
 _GENERAL_AGENT_DEFAULTS: dict[str, Any] = {
@@ -250,6 +253,7 @@ _SALES_AGENT_DEFAULTS: dict[str, Any] = {
     'shipping_policy': '',
     'shipping_coverage': '',
     'shipping_avg_days': '',
+    'ships_same_day': False,
     'min_order_units': 1,
     'max_units_auto_approve': 10,
     'returns_window_days': 15,

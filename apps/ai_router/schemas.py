@@ -49,6 +49,7 @@ class PolicyStatus(StrEnum):
 
 class RouteType(StrEnum):
     DIRECT_AI_REPLY = 'direct_ai_reply'
+    ROUTE_TO_SALES_AGENT = 'route_to_sales_agent'
     TRIGGER_FLOW = 'trigger_flow'
     ESCALATE_TO_HUMAN = 'escalate_to_human'
     REQUEST_CLARIFICATION = 'request_clarification'

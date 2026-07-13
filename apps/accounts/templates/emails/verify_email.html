@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verifica tu correo — Zelora</title>
+</head>
+<body style="margin:0;padding:0;background-color:#0b0716;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#0b0716;background-image:radial-gradient(circle at 85% 0%, #2c1b6b 0%, transparent 38%), radial-gradient(circle at 0% 30%, #24104f 0%, transparent 34%), radial-gradient(circle at 50% 100%, #1c0f3e 0%, transparent 42%);">
+    <tr>
+      <td align="center" style="padding:36px 16px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;">
+
+          <!-- Logo lockup — mirrors ZeloraLogo (mark + wordmark) from the nav/footer -->
+          <tr>
+            <td align="center" style="padding-bottom:28px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td valign="middle" style="padding-right:10px;">
+                    <img src="{{ logo_url }}" width="34" height="34" alt="Zelora" style="display:block;border:0;width:34px;height:34px;" />
+                  </td>
+                  <td valign="middle" style="font-size:22px;font-weight:800;letter-spacing:-0.02em;color:#ffffff;">
+                    zelora
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Card -->
+          <tr>
+            <td style="padding-bottom:18px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-radius:28px;background:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.09);">
+
+                <!-- Eyebrow badge -->
+                <tr>
+                  <td style="padding:24px 28px 0 28px;">
+                    <span style="display:inline-block;padding:7px 14px;border-radius:999px;background:rgba(124,58,237,0.18);border:1px solid rgba(167,139,250,0.30);font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#c4b5fd;">
+                      Activación de cuenta
+                    </span>
+                  </td>
+                </tr>
+
+                <!-- Gradient-style heading (solid accent line — background-clip:text isn't reliable across email clients) -->
+                <tr>
+                  <td style="padding:18px 28px 12px 28px;">
+                    <div style="font-size:36px;line-height:1.08;font-weight:800;letter-spacing:-0.03em;color:#ffffff;">
+                      Verifica tu
+                      <span style="display:block;color:#c4b5fd;">correo.</span>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:0 28px 26px 28px;font-size:15.5px;line-height:1.7;color:rgba(255,255,255,0.72);">
+                    Hola {% if user.nombre %}{{ user.nombre }}{% else %}allí{% endif %}, gracias por crear tu cuenta en Zelora.
+                    Solo falta confirmar tu correo para activar tu vendedor con IA y entrar a tu workspace.
+                  </td>
+                </tr>
+
+                <!-- CTA button -->
+                <tr>
+                  <td style="padding:0 28px 24px 28px;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td align="center" style="border-radius:999px;background:linear-gradient(135deg,#7c3aed,#ec4899);box-shadow:0 8px 28px rgba(124,58,237,0.40);">
+                          <a href="{{ verify_url }}" style="display:inline-block;padding:15px 30px;font-size:14px;font-weight:800;color:#ffffff;text-decoration:none;border-radius:999px;">
+                            Verificar mi correo
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <!-- Checklist, mirroring the hero's checkmark list -->
+                <tr>
+                  <td style="padding:0 28px 26px 28px;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="padding-bottom:8px;font-size:13px;line-height:1.6;color:rgba(255,255,255,0.60);">
+                          <span style="color:#a78bfa;font-weight:800;">✓</span>&nbsp; Tu vendedor con IA queda activo
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="font-size:13px;line-height:1.6;color:rgba(255,255,255,0.60);">
+                          <span style="color:#a78bfa;font-weight:800;">✓</span>&nbsp; Acceso completo a tu workspace
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <!-- Importante — glass info card -->
+                <tr>
+                  <td style="padding:0 28px 22px 28px;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-radius:22px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);">
+                      <tr>
+                        <td style="padding:18px 18px 14px 18px;">
+                          <div style="font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#c4b5fd;padding-bottom:8px;">
+                            Importante
+                          </div>
+                          <div style="font-size:14px;line-height:1.7;color:rgba(255,255,255,0.70);">
+                            Este enlace expira en {{ expiry_hours }} horas. Si no creaste una cuenta en Zelora, puedes ignorar este mensaje.
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:0 28px 24px 28px;">
+                    <div style="font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:rgba(255,255,255,0.38);padding-bottom:8px;">
+                      ¿El botón no funciona?
+                    </div>
+                    <div style="font-size:12px;line-height:1.7;color:rgba(255,255,255,0.55);word-break:break-all;">
+                      {{ verify_url }}
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer — mirrors the landing page footer (logo + tagline, then a bordered copyright bar) -->
+          <tr>
+            <td style="padding-top:6px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" style="padding-bottom:16px;font-size:12.5px;line-height:1.6;color:rgba(255,255,255,0.42);">
+                    El vendedor de IA que cierra ventas por chat mientras no estás,<br />hecho para ecommerce en Colombia.
+                  </td>
+                </tr>
+                <tr>
+                  <td style="border-top:1px solid rgba(255,255,255,0.08);padding-top:16px;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td align="center" style="font-size:12px;line-height:1.6;color:rgba(255,255,255,0.42);">
+                          © 2026 Zelora · Hecho para vender en LatAm &nbsp;·&nbsp; Bogotá, Colombia
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

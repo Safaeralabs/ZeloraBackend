@@ -82,11 +82,14 @@ class OnboardingProfileSerializer(serializers.Serializer):
     payment_settings = serializers.JSONField(required=False)
     org_profile = serializers.JSONField(required=False)
     general_agent = serializers.JSONField(required=False)
+    sales_agent = serializers.JSONField(required=False)
     ai_platform = serializers.JSONField(required=False)
     what_you_sell = serializers.CharField(allow_blank=True, required=False)
     who_you_sell_to = serializers.CharField(allow_blank=True, required=False)
     general_agent_name = serializers.CharField(allow_blank=True, required=False)
     general_agent_profile = serializers.JSONField(required=False)
+    sales_agent_name = serializers.CharField(allow_blank=True, required=False)
+    sales_agent_profile = serializers.JSONField(required=False)
     quick_knowledge_text = serializers.CharField(allow_blank=True, required=False)
     quick_knowledge_links = serializers.ListField(
         child=serializers.CharField(max_length=500),
@@ -131,11 +134,14 @@ class OnboardingProfileSerializer(serializers.Serializer):
             'payment_settings': instance.get('payment_settings', {}),
             'org_profile': instance.get('org_profile', {}),
             'general_agent': instance.get('general_agent', {}),
+            'sales_agent': instance.get('sales_agent', {}),
             'ai_platform': instance.get('ai_platform', {}),
             'what_you_sell': instance.get('what_you_sell', ''),
             'who_you_sell_to': instance.get('who_you_sell_to', ''),
             'general_agent_name': instance.get('general_agent_name', ''),
             'general_agent_profile': instance.get('general_agent_profile', {}),
+            'sales_agent_name': instance.get('sales_agent_name', ''),
+            'sales_agent_profile': instance.get('sales_agent_profile', {}),
             'quick_knowledge_text': instance.get('quick_knowledge_text', ''),
             'quick_knowledge_links': instance.get('quick_knowledge_links', []),
             'quick_knowledge_files': instance.get('quick_knowledge_files', []),

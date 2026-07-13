@@ -374,3 +374,60 @@ class SalesSession(models.Model):
         return f'SalesSession({self.conversation_id}, stage={self.stage}, situation={self.situation})'
 
 
+class ContactMemory(models.Model):
+    """
+    Soft, cross-conversation customer signals — ONE row per contact,
+    updated in place from SessionManager.update() (see
+    apps.ai_engine.sales.contact_memory.ContactMemoryService). Complements
+    CustomerHistoryService (hard Order facts): this holds inferred
+    preferences that don't live anywhere else once a conversation closes,
+    so a brand-new conversation from the same contact isn't a blank slate.
+
+    Deliberately cheap: a single upsert per turn (no LLM call), and reads
+    are a single indexed lookup by contact — never a query across all past
+    conversations/messages.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        'accounts.Organization', on_delete=models.CASCADE, related_name='contact_memories'
+    )
+    contact = models.OneToOneField(
+        'accounts.Contact', on_delete=models.CASCADE, related_name='memory'
+    )
+
+    inferred_budget_min = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text='Min budget inferred from conversation (e.g., "presupuesto 50k")',
+    )
+    inferred_budget_max = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text='Max budget inferred',
+    )
+    style_cues = models.JSONField(
+        default=dict, blank=True,
+        help_text='Inferred style patterns: {"tone": "casual", "urgency": "high"}',
+    )
+    occasion_hints = models.JSONField(default=list, blank=True, help_text='e.g. ["boda", "trabajo"]')
+    category_preferences = models.JSONField(default=list, blank=True, help_text='Categories shown/mentioned')
+    last_products_shown = models.JSONField(default=list, blank=True, help_text='Last product IDs shown')
+    last_intent = models.CharField(max_length=50, blank=True, default='')
+    last_objection = models.CharField(max_length=50, blank=True, default='')
+    conversation_count = models.PositiveIntegerField(default=0)
+    last_conversation_at = models.DateTimeField(null=True, blank=True)
+    total_products_viewed = models.PositiveIntegerField(default=0)
+    converted = models.BooleanField(default=False, help_text='Has this contact purchased?')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'contact_memories'
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['organization', 'updated_at']),
+        ]
+
+    def __str__(self):
+        return f'ContactMemory({self.contact_id})'
+
+

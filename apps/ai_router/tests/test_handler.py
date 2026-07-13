@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
-from apps.ai_router.handler import handle_inbound_message
+from apps.ai_router.handler import _execute_decision, handle_inbound_message
 from apps.ai_router.schemas import RouteType
 
 
@@ -43,3 +43,53 @@ class AIRouterHandlerTests(SimpleTestCase):
         self.assertIsNone(reply)
         self.assertEqual(returned_decision, decision)
         mock_execute.assert_not_called()
+
+
+class ExecuteDecisionFollowupWiringTests(SimpleTestCase):
+    """The order-confirmation followup must surface as its own post_action,
+    distinct from (and alongside) bot_message_metadata, so the caller can
+    send it as a second proactive chat bubble."""
+
+    @patch('apps.ai_router.handler._sales_agent_enabled', return_value=True)
+    @patch('apps.ai_router.handler.SalesAgentExecutor')
+    def test_followup_message_becomes_its_own_post_action(self, mock_executor_cls, _mock_enabled):
+        executor = MagicMock()
+        executor.execute.return_value = 'Listo, tu pedido fue creado.'
+        executor.get_message_metadata.return_value = {'ui_payload': {'kind': 'order_confirmed'}}
+        executor.get_followup_message.return_value = 'Te escribo apenas este listo.'
+        mock_executor_cls.return_value = executor
+
+        decision = MagicMock()
+        decision.route = RouteType.ROUTE_TO_SALES_AGENT
+        decision.post_actions = []
+
+        reply = _execute_decision(
+            decision=decision, conversation=MagicMock(canal='app'), message=MagicMock(), organization=MagicMock(),
+        )
+
+        self.assertEqual(reply, 'Listo, tu pedido fue creado.')
+        action_types = [pa['action_type'] for pa in decision.post_actions]
+        self.assertIn('bot_message_metadata', action_types)
+        self.assertIn('bot_followup_message', action_types)
+        followup_action = next(pa for pa in decision.post_actions if pa['action_type'] == 'bot_followup_message')
+        self.assertEqual(followup_action['payload']['text'], 'Te escribo apenas este listo.')
+
+    @patch('apps.ai_router.handler._sales_agent_enabled', return_value=True)
+    @patch('apps.ai_router.handler.SalesAgentExecutor')
+    def test_no_followup_post_action_when_executor_has_nothing_to_add(self, mock_executor_cls, _mock_enabled):
+        executor = MagicMock()
+        executor.execute.return_value = 'Tenemos varias opciones disponibles.'
+        executor.get_message_metadata.return_value = {}
+        executor.get_followup_message.return_value = None
+        mock_executor_cls.return_value = executor
+
+        decision = MagicMock()
+        decision.route = RouteType.ROUTE_TO_SALES_AGENT
+        decision.post_actions = []
+
+        _execute_decision(
+            decision=decision, conversation=MagicMock(canal='app'), message=MagicMock(), organization=MagicMock(),
+        )
+
+        action_types = [pa['action_type'] for pa in decision.post_actions]
+        self.assertNotIn('bot_followup_message', action_types)

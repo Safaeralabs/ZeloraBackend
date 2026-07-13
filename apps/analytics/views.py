@@ -123,7 +123,8 @@ class LearningCandidateApproveView(APIView):
         if candidate is None:
             return Response({'detail': 'Learning candidate not found.'}, status=404)
         article = approve_learning_candidate(candidate=candidate, author=request.user)
-        return Response({'status': 'approved', 'article_id': str(article.id)})
+        # Example-bank kinds are approved in place (no article created).
+        return Response({'status': 'approved', 'article_id': str(article.id) if article else None})
 
 
 class LearningCandidateRejectView(APIView):
@@ -326,15 +327,6 @@ class OverviewView(APIView):
 
         # Calculate satisfaction (brand_fit_score * 100 as proxy until CSAT surveys implemented)
         satisfaccion_pct = round(brand_fit * 100, 1)
-
-        # Average response time from ConversationMessage timestamps
-        from apps.conversations.models import ConversationMessage
-        from django.db.models.functions import Extract
-        from django.db.models import F, DurationField, ExpressionWrapper
-
-        messages = ConversationMessage.objects.filter(
-            conversation__in=conversations
-        ).order_by('conversation', 'timestamp')
 
         # Simple heuristic: average time between user and bot messages
         tiempo_promedio_seg = 38  # Fallback default

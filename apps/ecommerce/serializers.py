@@ -1,5 +1,9 @@
+from django.db import transaction
 from rest_framework import serializers
-from .models import Product, ProductVariant, Order, InventoryMovement, Promotion, ProductRelation
+from .models import (
+    Product, ProductVariant, Order, OrderLineItem, OrderEvent,
+    InventoryMovement, Promotion, ProductRelation,
+)
 
 
 class ProductVariantSerializer(serializers.ModelSerializer):
@@ -204,14 +208,47 @@ class InventoryMovementSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'organization', 'created_at']
 
 
+class OrderLineItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderLineItem
+        fields = '__all__'
+        read_only_fields = ['id']
+        extra_kwargs = {'order': {'required': False}}
+
+
+class OrderEventSerializer(serializers.ModelSerializer):
+    actor_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrderEvent
+        fields = ['id', 'event_type', 'message', 'actor', 'actor_name', 'metadata', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+    def get_actor_name(self, obj):
+        if obj.actor:
+            return f'{obj.actor.nombre} {obj.actor.apellido}'.strip() or obj.actor.email
+        return ''
+
+
 class OrderSerializer(serializers.ModelSerializer):
+    line_items_data = serializers.ListField(child=serializers.DictField(), write_only=True, required=False)
+    display_order_number = serializers.SerializerMethodField()
+    conversation_id = serializers.UUIDField(source='conversation.id', read_only=True, allow_null=True)
+
+    def get_display_order_number(self, obj):
+        if obj.order_number:
+            return f'#{obj.order_number:04d}'
+        return f'#{str(obj.id)[:8]}'
+
     def validate(self, attrs):
         order_kind = attrs.get('order_kind', getattr(self.instance, 'order_kind', 'purchase'))
         scheduled_for = attrs.get('scheduled_for', getattr(self.instance, 'scheduled_for', None))
         service_location = attrs.get('service_location', getattr(self.instance, 'service_location', ''))
+        line_items_data = attrs.get('line_items_data', [])
+        items = attrs.get('items', getattr(self.instance, 'items', []))
 
-        if order_kind in ('booking', 'quote_request') and not attrs.get('items', getattr(self.instance, 'items', [])):
-            raise serializers.ValidationError({'items': 'Bookings and quote requests require at least one line item.'})
+        if self.instance is None and not line_items_data and not items:
+            raise serializers.ValidationError({'line_items_data': 'At least one line item is required.'})
         if order_kind == 'booking' and scheduled_for is None:
             raise serializers.ValidationError({'scheduled_for': 'Bookings require a scheduled date/time.'})
         if order_kind == 'booking' and not service_location:
@@ -221,11 +258,115 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = '__all__'
-        read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'organization', 'order_number', 'conversation_id', 'created_at', 'updated_at']
+
+    @transaction.atomic
+    def create(self, validated_data):
+        line_items_data = validated_data.pop('line_items_data', [])
+        org_id = validated_data['organization'].id if hasattr(validated_data.get('organization', None), 'id') else validated_data.get('organization_id')
+        if not org_id:
+            org_id = validated_data['organization']
+        validated_data['order_number'] = Order.next_order_number(org_id)
+
+        order = Order.objects.create(**validated_data)
+
+        if line_items_data:
+            self._create_line_items(order, line_items_data)
+            self._sync_financials(order)
+
+        OrderEvent.objects.create(
+            order=order,
+            event_type='created',
+            message='Pedido creado',
+            actor=self.context.get('request', None) and self.context['request'].user,
+        )
+        return order
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        line_items_data = validated_data.pop('line_items_data', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if line_items_data is not None:
+            instance.line_items.all().delete()
+            self._create_line_items(instance, line_items_data)
+            self._sync_financials(instance)
+
+        return instance
+
+    def _create_line_items(self, order, items_data):
+        items_json = []
+        for item in items_data:
+            li = OrderLineItem.objects.create(
+                order=order,
+                product_id=item.get('product_id'),
+                variant_id=item.get('variant_id'),
+                title=item.get('title', ''),
+                sku=item.get('sku', ''),
+                quantity=item.get('quantity', 1),
+                unit_price=item.get('unit_price', 0),
+                discount=item.get('discount', 0),
+                tax=item.get('tax', 0),
+                offer_type=item.get('offer_type', 'physical'),
+                properties=item.get('properties', {}),
+            )
+            items_json.append({
+                'sku': li.sku,
+                'qty': li.quantity,
+                'unitPrice': float(li.unit_price),
+                'title': li.title,
+                'offerType': li.offer_type,
+            })
+        order.items = items_json
+        order.save(update_fields=['items'])
+
+    def _sync_financials(self, order):
+        from decimal import Decimal
+        line_items = order.line_items.all()
+        subtotal = sum((li.unit_price * li.quantity) - li.discount for li in line_items)
+        tax = sum(li.tax for li in line_items)
+        order.subtotal = subtotal
+        order.tax_amount = tax
+        order.total = subtotal - order.discount_total + tax + order.shipping_cost
+        order.save(update_fields=['subtotal', 'tax_amount', 'total'])
+
+
+class OrderDetailSerializer(OrderSerializer):
+    line_items = OrderLineItemSerializer(many=True, read_only=True)
+    events = OrderEventSerializer(many=True, read_only=True)
+    contact_name = serializers.SerializerMethodField()
+
+    class Meta(OrderSerializer.Meta):
+        pass
+
+    def get_contact_name(self, obj):
+        if obj.contact:
+            return f'{obj.contact.nombre} {obj.contact.apellido}'.strip()
+        return obj.customer_name
 
 
 class PromotionSerializer(serializers.ModelSerializer):
     """P1.1: Promotion serializer for managing discounts and offers."""
+
+    def validate(self, attrs):
+        trigger_type = attrs.get('trigger_type', getattr(self.instance, 'trigger_type', 'automatic'))
+        code = str(attrs.get('code', getattr(self.instance, 'code', '')) or '').strip()
+        scope = attrs.get('scope', getattr(self.instance, 'scope', 'product'))
+        discount_type = attrs.get('discount_type', getattr(self.instance, 'discount_type', 'percentage'))
+        buy_x = int(attrs.get('buy_x_qty', getattr(self.instance, 'buy_x_qty', 0)) or 0)
+        get_y = int(attrs.get('get_y_qty', getattr(self.instance, 'get_y_qty', 0)) or 0)
+
+        if trigger_type == 'code' and not code:
+            raise serializers.ValidationError({'code': 'Discount code is required when trigger_type=code.'})
+        if trigger_type != 'code':
+            attrs['code'] = ''
+        if scope == 'shipping' and discount_type not in ('free_shipping', 'fixed_amount', 'percentage'):
+            raise serializers.ValidationError({'discount_type': 'Shipping scope only supports free_shipping, fixed_amount, or percentage.'})
+        if discount_type == 'bundle' and (buy_x <= 0 or get_y <= 0):
+            raise serializers.ValidationError({'buy_x_qty': 'Bundle promotions require buy_x_qty and get_y_qty greater than 0.'})
+        return attrs
 
     class Meta:
         model = Promotion

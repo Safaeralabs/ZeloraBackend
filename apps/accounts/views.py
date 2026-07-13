@@ -68,6 +68,23 @@ def _hydrate_general_agent_profile(settings_payload: dict | None) -> dict:
     }
 
 
+def _hydrate_sales_agent_profile(settings_payload: dict | None) -> dict:
+    settings_payload = settings_payload or {}
+    stored = settings_payload.get('sales_agent_profile') or {}
+    return {
+        'agent_persona': '',
+        'mission_statement': '',
+        'greeting_message': '',
+        'response_language': 'auto',
+        'competitor_response': '',
+        'brand_profile': _merge_nested(settings_payload.get('brand_profile'), stored.get('brand_profile')),
+        'sales_playbook': _merge_nested(settings_payload.get('sales_playbook'), stored.get('sales_playbook')),
+        'buyer_model': _merge_nested(settings_payload.get('buyer_model'), stored.get('buyer_model')),
+        'commerce_rules': _merge_nested(settings_payload.get('commerce_rules'), stored.get('commerce_rules')),
+        **stored,
+    }
+
+
 def _merge_org_profile_block(existing: dict | None, patch: dict | None) -> dict:
     existing = existing or {}
     patch = patch or {}
@@ -85,6 +102,85 @@ def _sync_legacy_org_profile_fields(settings_payload: dict, org_profile: dict) -
     settings_payload['payment_methods'] = org_profile.get('payment_methods', []) or []
     settings_payload['brand_profile'] = org_profile.get('brand', {}) or {}
     return settings_payload
+
+
+def _sync_sales_agent_fields(settings_payload: dict, sales_agent: dict) -> dict:
+    sales_agent = sales_agent or {}
+    existing_profile = _hydrate_sales_agent_profile(settings_payload)
+    next_profile = {
+        **existing_profile,
+        'agent_persona': sales_agent.get('persona', existing_profile.get('agent_persona', '')) or '',
+        'mission_statement': sales_agent.get('mission_statement', existing_profile.get('mission_statement', '')) or '',
+        'greeting_message': sales_agent.get('greeting_message', existing_profile.get('greeting_message', '')) or '',
+        'response_language': sales_agent.get('response_language', existing_profile.get('response_language', 'auto')) or 'auto',
+        'competitor_response': sales_agent.get('competitor_response', existing_profile.get('competitor_response', '')) or '',
+        'sales_playbook': _merge_nested(
+            existing_profile.get('sales_playbook'),
+            sales_agent.get('playbook'),
+        ),
+        'buyer_model': _merge_nested(
+            existing_profile.get('buyer_model'),
+            sales_agent.get('buyer_model'),
+        ),
+        'commerce_rules': _merge_nested(
+            existing_profile.get('commerce_rules'),
+            sales_agent.get('commerce_rules'),
+        ),
+    }
+
+    settings_payload['settings_version'] = 2
+    settings_payload['sales_agent'] = sales_agent
+    settings_payload['sales_agent_name'] = sales_agent.get('name') or settings_payload.get('sales_agent_name') or 'Sales Agent'
+    settings_payload['sales_agent_profile'] = next_profile
+    settings_payload['sales_playbook'] = next_profile.get('sales_playbook') or {}
+    settings_payload['buyer_model'] = next_profile.get('buyer_model') or {}
+    settings_payload['commerce_rules'] = next_profile.get('commerce_rules') or {}
+
+    ai_preferences = dict(settings_payload.get('ai_preferences') or {})
+    ai_sales_agent = dict(ai_preferences.get('sales_agent') or {})
+    ai_preferences['sales_agent'] = {
+        **ai_sales_agent,
+        'enabled': sales_agent.get('enabled', ai_sales_agent.get('enabled', True)),
+        'model_name': sales_agent.get('model_name', ai_sales_agent.get('model_name', 'gpt-4.1-nano')),
+        'autonomy_level': sales_agent.get('autonomy_level', ai_sales_agent.get('autonomy_level', 'semi_autonomo')),
+        'followup_mode': sales_agent.get('followup_mode', ai_sales_agent.get('followup_mode', 'suave')),
+        'max_followups': sales_agent.get('max_followups', ai_sales_agent.get('max_followups', 1)),
+        'recommendation_depth': sales_agent.get('recommendation_depth', ai_sales_agent.get('recommendation_depth', 2)),
+        'handoff_mode': sales_agent.get('handoff_mode', ai_sales_agent.get('handoff_mode', 'balanceado')),
+        'max_response_length': sales_agent.get('max_response_length', ai_sales_agent.get('max_response_length', 'standard')),
+    }
+    settings_payload['ai_preferences'] = ai_preferences
+    return settings_payload
+
+
+PAYMENT_METHOD_REQUIRED_FIELDS: dict[str, list[str]] = {
+    'nequi': ['nequi_number', 'nequi_holder'],
+    'transferencia bancaria': ['bank_name', 'account_number', 'account_holder'],
+    'efectivo': ['cash_instructions'],
+}
+
+
+def _validate_payment_methods_configured(methods: list[str], payment_settings: dict | None) -> None:
+    """A payment method can't go active until its required details are filled in.
+
+    Methods outside PAYMENT_METHOD_REQUIRED_FIELDS (free-text/custom entries) pass
+    through unchecked since there's no known schema to validate them against.
+    """
+    payment_settings = payment_settings or {}
+    incomplete = [
+        method for method in methods
+        if method in PAYMENT_METHOD_REQUIRED_FIELDS
+        and any(
+            not str(payment_settings.get(field) or '').strip()
+            for field in PAYMENT_METHOD_REQUIRED_FIELDS[method]
+        )
+    ]
+    if incomplete:
+        raise ValidationError({
+            'payment_methods': (
+                f"Completa los datos de {', '.join(incomplete)} antes de activarlo como metodo de pago."
+            ),
+        })
 
 
 def _compute_activation_tasks(organization, settings_payload: dict) -> dict:
@@ -110,6 +206,7 @@ def _compute_activation_tasks(organization, settings_payload: dict) -> dict:
     return {
         'knowledge_status': 'completed' if (has_quick_knowledge or has_kb_content) else 'pending',
         'channels_status': 'completed' if channel_active else 'pending',
+        'payment_status': 'completed' if (settings_payload.get('payment_methods') or []) else 'pending',
         'agent_test_status': current_tasks.get('agent_test_status', 'pending'),
         'agent_tested_at': current_tasks.get('agent_tested_at'),
     }
@@ -245,6 +342,13 @@ class LoginView(TokenObtainPairView):
             raise
 
         if response.status_code == 200 and target_user and org:
+            # Block unverified users (staff bypass for internal access)
+            if not target_user.email_verified and not target_user.is_staff:
+                return Response(
+                    {'detail': 'email_not_verified'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
             # Check IP allowlist
             security_settings = _get_org_security_settings(org)
             if _check_ip_blocked(security_settings, client_ip):
@@ -344,14 +448,222 @@ class SignupView(generics.CreateAPIView):
 
         logger.info('user_signup', user_id=str(user.id), org_id=str(org.id), org=company_name)
 
+        try:
+            from .tasks import send_verification_email_task
+            send_verification_email_task.delay(str(user.id))
+        except Exception as exc:
+            logger.warning('verification_email_queue_failed', user_id=str(user.id), error=str(exc))
+
         return Response(
             {
-                'message': 'Account created successfully',
+                'message': 'verification_email_sent',
+                'email': email,
                 'org_id': str(org.id),
                 'user_id': str(user.id),
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class VerifyEmailView(generics.GenericAPIView):
+    """
+    POST /api/auth/verify-email/
+    Verifies the token from the email link and activates the user account.
+    Returns JWT tokens on success (auto-login).
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from .models import EmailVerificationToken
+
+        token_str = (request.data.get('token', '') or '').strip()
+        if not token_str:
+            return Response({'error': 'token is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token_obj = EmailVerificationToken.objects.select_related('user').get(token=token_str)
+        except (EmailVerificationToken.DoesNotExist, Exception):
+            return Response({'error': 'Invalid or expired verification link'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not token_obj.is_valid():
+            return Response(
+                {'error': 'Este enlace ya fue usado o ha expirado. Solicita uno nuevo.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = token_obj.user
+        token_obj.used = True
+        token_obj.save(update_fields=['used'])
+
+        user.email_verified = True
+        user.email_verified_at = timezone.now()
+        user.save(update_fields=['email_verified', 'email_verified_at'])
+
+        refresh = RefreshToken.for_user(user)
+        refresh['nombre'] = user.nombre
+        refresh['apellido'] = user.apellido
+        refresh['rol'] = user.rol
+        refresh['org_id'] = str(user.organization_id) if user.organization_id else None
+        refresh['org_name'] = user.organization.name if user.organization_id else ''
+        refresh['is_available'] = user.is_available
+
+        logger.info('email_verified', user_id=str(user.id))
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': {
+                'id': str(user.id),
+                'nombre': user.nombre,
+                'apellido': user.apellido,
+                'email': user.email,
+                'rol': user.rol,
+            },
+        })
+
+
+class ResendVerificationView(generics.GenericAPIView):
+    """
+    POST /api/auth/resend-verification/
+    Resends the verification email. Rate-limited to 1 per 60 seconds per user.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        from .models import EmailVerificationToken
+        from .tasks import send_verification_email_task
+
+        email = (request.data.get('email', '') or '').strip().lower()
+        if not email:
+            return Response({'error': 'email is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Always return 200 to prevent email enumeration
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return Response({'message': 'If the email exists and is unverified, a new link has been sent.'})
+
+        if user.email_verified:
+            return Response({'message': 'If the email exists and is unverified, a new link has been sent.'})
+
+        # 60-second rate limit
+        from datetime import timedelta
+        recent = EmailVerificationToken.objects.filter(
+            user=user,
+            created_at__gte=timezone.now() - timedelta(seconds=60),
+        ).exists()
+        if recent:
+            return Response(
+                {'error': 'Espera un momento antes de solicitar un nuevo enlace.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        try:
+            send_verification_email_task.delay(str(user.id))
+        except Exception as exc:
+            logger.warning('resend_verification_queue_failed', user_id=str(user.id), error=str(exc))
+
+        return Response({'message': 'If the email exists and is unverified, a new link has been sent.'})
+
+
+class PasswordResetRequestView(generics.GenericAPIView):
+    """
+    POST /api/auth/password-reset/request/
+    Sends a password reset email if the address matches an account.
+    Always returns 200 with a generic message to prevent email enumeration.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        from datetime import timedelta
+        from .models import PasswordResetToken
+        from .tasks import send_password_reset_email_task
+
+        generic_response = Response({'message': 'If the email exists, a reset link has been sent.'})
+
+        email = (request.data.get('email', '') or '').strip().lower()
+        if not email:
+            return Response({'error': 'email is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return generic_response
+
+        # 60-second rate limit, mirrors resend-verification
+        recent = PasswordResetToken.objects.filter(
+            user=user,
+            created_at__gte=timezone.now() - timedelta(seconds=60),
+        ).exists()
+        if recent:
+            return generic_response
+
+        try:
+            send_password_reset_email_task.delay(str(user.id))
+        except Exception as exc:
+            logger.warning('password_reset_email_queue_failed', user_id=str(user.id), error=str(exc))
+
+        return generic_response
+
+
+class PasswordResetConfirmView(generics.GenericAPIView):
+    """
+    POST /api/auth/password-reset/confirm/
+    Verifies the token from the reset email and sets a new password.
+    Does not auto-login — the user re-authenticates with the new password.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        from .models import PasswordResetToken
+
+        token_str = (request.data.get('token', '') or '').strip()
+        new_password = request.data.get('new_password', '') or request.data.get('password', '')
+
+        if not token_str:
+            return Response({'error': 'token is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not new_password:
+            return Response({'error': 'new_password is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token_obj = PasswordResetToken.objects.select_related('user', 'user__organization').get(token=token_str)
+        except (PasswordResetToken.DoesNotExist, ValueError, Exception):
+            return Response({'error': 'Este enlace no es válido o ya expiró.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not token_obj.is_valid():
+            return Response(
+                {'error': 'Este enlace ya fue usado o ha expirado. Solicita uno nuevo.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = token_obj.user
+        org = user.organization
+        security_settings = _get_org_security_settings(org) if org else {}
+        policy_errors = _validate_password_policy(security_settings, new_password)
+        if policy_errors:
+            return Response({'error': policy_errors[0]}, status=status.HTTP_400_BAD_REQUEST)
+
+        token_obj.used = True
+        token_obj.save(update_fields=['used'])
+
+        user.set_password(new_password)
+        user.save(update_fields=['password'])
+
+        # Any other outstanding reset tokens for this user are now moot.
+        PasswordResetToken.objects.filter(user=user, used=False).exclude(id=token_obj.id).update(used=True)
+
+        if org:
+            _log_security_event(
+                org=org,
+                event_type='password_reset',
+                description=f'Contrasena restablecida via enlace de recuperacion para {user.email}',
+                request=request,
+                actor=user,
+                actor_email=user.email,
+            )
+
+        logger.info('password_reset_completed', user_id=str(user.id))
+        return Response({'message': 'password_reset_successful'})
 
 
 class SignupAvailabilityView(generics.GenericAPIView):
@@ -581,8 +893,12 @@ class OnboardingProfileView(generics.GenericAPIView):
                     'tax_id': '',
                     'contact_email': '',
                     'contact_phone': '',
-                    'payment_methods': ['transferencia bancaria', 'efectivo'],
+                    'payment_methods': [],
                     'payment_settings': {
+                        'nequi_enabled': True,
+                        'nequi_number': '',
+                        'nequi_holder': '',
+                        'nequi_note': '',
                         'bank_transfer_enabled': True,
                         'cash_enabled': True,
                         'bank_name': '',
@@ -686,6 +1002,8 @@ class OnboardingProfileView(generics.GenericAPIView):
         settings_payload.update(normalise_settings(settings_payload))
         settings_payload['general_agent_name'] = settings_payload.get('general_agent_name') or 'General Agent'
         settings_payload['general_agent_profile'] = _hydrate_general_agent_profile(settings_payload)
+        settings_payload['sales_agent_name'] = settings_payload.get('sales_agent_name') or settings_payload.get('sales_agent', {}).get('name') or 'Sales Agent'
+        settings_payload['sales_agent_profile'] = _hydrate_sales_agent_profile(settings_payload)
         payload = {
             'organization_name': org.name,
             'website': org.website,
@@ -709,6 +1027,20 @@ class OnboardingProfileView(generics.GenericAPIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        incoming_methods = data.get('payment_methods')
+        if incoming_methods is None and 'org_profile' in data:
+            incoming_methods = (data.get('org_profile') or {}).get('payment_methods')
+        if incoming_methods is not None:
+            existing_payment_settings = (config.settings or {}).get('payment_settings') or {}
+            incoming_payment_settings = data.get('payment_settings')
+            effective_payment_settings = (
+                {**existing_payment_settings, **incoming_payment_settings}
+                if incoming_payment_settings is not None
+                else existing_payment_settings
+            )
+            methods = [str(item).strip() for item in (incoming_methods or []) if str(item).strip()]
+            _validate_payment_methods_configured(methods, effective_payment_settings)
+
         org_changed = False
         if 'organization_name' in data and data['organization_name'] != org.name:
             org.name = data['organization_name']
@@ -728,6 +1060,8 @@ class OnboardingProfileView(generics.GenericAPIView):
             'tax_id',
             'contact_email',
             'contact_phone',
+            'payment_methods',
+            'payment_settings',
             'what_you_sell',
             'who_you_sell_to',
             'general_agent_name',
@@ -758,6 +1092,17 @@ class OnboardingProfileView(generics.GenericAPIView):
 
         normalized_settings = normalise_settings(settings_payload)
 
+        if 'payment_methods' in data:
+            methods = [str(item).strip() for item in (data.get('payment_methods') or []) if str(item).strip()]
+            settings_payload['payment_methods'] = methods
+            next_org_profile = _merge_org_profile_block(
+                normalized_settings.get('org_profile'),
+                {'payment_methods': methods},
+            )
+            settings_payload = _sync_legacy_org_profile_fields(settings_payload, next_org_profile)
+            settings_payload['settings_version'] = 2
+            normalized_settings['org_profile'] = next_org_profile
+
         if 'org_profile' in data:
             next_org_profile = _merge_org_profile_block(normalized_settings.get('org_profile'), data['org_profile'])
             settings_payload = _sync_legacy_org_profile_fields(settings_payload, next_org_profile)
@@ -776,8 +1121,26 @@ class OnboardingProfileView(generics.GenericAPIView):
                 **incoming_profile,
             }
 
+        if 'sales_agent_profile' in data:
+            current_sales_agent_profile = _hydrate_sales_agent_profile(settings_payload)
+            incoming_profile = data['sales_agent_profile'] or {}
+            settings_payload['sales_agent_profile'] = {
+                **current_sales_agent_profile,
+                **incoming_profile,
+            }
+
+        if 'sales_agent_name' in data:
+            settings_payload['sales_agent_name'] = data['sales_agent_name']
+
+        if 'sales_agent' in data:
+            merged_sales_agent = _merge_nested(normalized_settings.get('sales_agent'), data['sales_agent'])
+            settings_payload = _sync_sales_agent_fields(settings_payload, merged_sales_agent)
+            normalized_settings['sales_agent'] = merged_sales_agent
+
         settings_payload['general_agent_name'] = settings_payload.get('general_agent_name') or 'General Agent'
         settings_payload['general_agent_profile'] = _hydrate_general_agent_profile(settings_payload)
+        settings_payload['sales_agent_name'] = settings_payload.get('sales_agent_name') or settings_payload.get('sales_agent', {}).get('name') or 'Sales Agent'
+        settings_payload['sales_agent_profile'] = _hydrate_sales_agent_profile(settings_payload)
         settings_payload.update(normalise_settings(settings_payload))
 
         settings_payload['activation_tasks'] = _compute_activation_tasks(org, settings_payload)

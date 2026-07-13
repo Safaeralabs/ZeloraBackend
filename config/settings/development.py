@@ -44,3 +44,12 @@ CORS_ALLOW_ALL_ORIGINS = True
 # ─── Feature flags: enable AI copilot in dev ────────────────────────────────────
 ENABLE_REAL_AI = os.environ.get('ENABLE_REAL_AI', 'False').lower() in ('1', 'true', 'yes')
 DEMO_MODE = os.environ.get('DEMO_MODE', 'True').lower() in ('1', 'true', 'yes')
+
+# ─── Tests must be deterministic and free: never call real AI APIs ─────────────
+import sys
+if 'test' in sys.argv:
+    ENABLE_REAL_AI = False
+    OPENAI_API_KEY = ''
+    # Run Celery tasks inline instead of blocking on a broker connection.
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = False

@@ -446,6 +446,7 @@ def _mark_inbound_unread(conversation, message_timestamp):
 def create_inbound_conversation(*, data: dict, channel: str, source: str):
     from apps.accounts.models import Contact, Organization
     from apps.conversations.models import Conversation, Message, TimelineEvent
+    from apps.conversations.serializers import serialize_message_ui_payload
 
     org_slug = data.get('organization_slug', '').strip()
     session_token = (data.get('session_token') or '').strip()
@@ -505,7 +506,11 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
         conversation=conversation,
         role='user',
         content=data['message'],
-        metadata={'source': source, 'platform': data.get('platform', '')},
+        metadata={
+            'source': source,
+            'platform': data.get('platform', ''),
+            'structured_payload': data.get('structured_payload') or {},
+        },
     )
 
     _mark_inbound_unread(conversation, user_message.timestamp)
@@ -561,12 +566,36 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
     # Create bot message with AI reply if one was generated
     # (This happens even if being escalated - we want to show the "escalating..." message)
     bot_message = None
+    bot_metadata = {'source': source, 'intent': intent, 'generated_by': 'ai_router'}
+    followup_text = ''
+    if decision:
+        for post_action in decision.post_actions or []:
+            if post_action.get('action_type') == 'bot_message_metadata':
+                payload = post_action.get('payload') or {}
+                if isinstance(payload, dict):
+                    bot_metadata.update(payload)
+            elif post_action.get('action_type') == 'bot_followup_message':
+                payload = post_action.get('payload') or {}
+                if isinstance(payload, dict):
+                    followup_text = str(payload.get('text') or '').strip()
     if bot_reply_text:
         bot_message = Message.objects.create(
             conversation=conversation,
             role='bot',
             content=bot_reply_text,
-            metadata={'source': source, 'intent': intent, 'generated_by': 'ai_router'},
+            metadata=bot_metadata,
+        )
+
+    # Proactive follow-up (e.g. "what happens next" right after an order is
+    # confirmed) sent as a second bubble in the same turn, without waiting
+    # for the customer to ask. Only fires alongside a real bot reply.
+    followup_message = None
+    if bot_message and followup_text:
+        followup_message = Message.objects.create(
+            conversation=conversation,
+            role='bot',
+            content=followup_text,
+            metadata={'source': source, 'intent': intent, 'generated_by': 'ai_router', 'kind': 'order_followup'},
         )
 
     # Reload conversation from DB to get any metadata changes from escalation
@@ -613,6 +642,16 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
                     'conversation': conversation_payload,
                 },
             )
+        if followup_message:
+            async_to_sync(channel_layer.group_send)(
+                f'org_{conversation.organization_id}',
+                {
+                    'type': 'conversation.message',
+                    'conversation_id': str(conversation.id),
+                    'message': MessageSerializer(followup_message).data,
+                    'conversation': conversation_payload,
+                },
+            )
 
         # If escalated, also broadcast any system messages (e.g., "Conectado con un asesor")
         if _is_human_owned(conversation):
@@ -637,6 +676,8 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
     _broadcast_public_appchat_message(conversation, user_message)
     if bot_message:
         _broadcast_public_appchat_message(conversation, bot_message)
+    if followup_message:
+        _broadcast_public_appchat_message(conversation, followup_message)
 
     # Broadcast system messages to appchat
     if _is_human_owned(conversation):
@@ -650,6 +691,8 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
 
     if bot_message:
         _broadcast_public_webchat_message(conversation, bot_message)
+    if followup_message:
+        _broadcast_public_webchat_message(conversation, followup_message)
     # Build messages array: always include user message, bot message only if created
     messages_list = [
         {
@@ -665,6 +708,15 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
             'role': bot_message.role,
             'content': bot_message.content,
             'timestamp': bot_message.timestamp.isoformat(),
+            'ui_payload': serialize_message_ui_payload(bot_message.metadata),
+        })
+    if followup_message:
+        messages_list.append({
+            'id': str(followup_message.id),
+            'role': followup_message.role,
+            'content': followup_message.content,
+            'timestamp': followup_message.timestamp.isoformat(),
+            'ui_payload': serialize_message_ui_payload(followup_message.metadata),
         })
 
     return {
@@ -679,6 +731,7 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
 def get_public_conversation_payload(*, org_slug: str | None, session_id: str, channel: str):
     from apps.accounts.models import Organization
     from apps.conversations.models import Conversation
+    from apps.conversations.serializers import serialize_message_ui_payload
 
     organization = None
     if org_slug:
@@ -713,6 +766,7 @@ def get_public_conversation_payload(*, org_slug: str | None, session_id: str, ch
                 'role': message.role,
                 'content': message.content,
                 'timestamp': message.timestamp.isoformat(),
+                'ui_payload': serialize_message_ui_payload(message.metadata),
             }
             for message in conversation.messages.order_by('timestamp')
         ],
@@ -1164,6 +1218,28 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
                 serializer.validated_data['session_id'],
             ),
             'organization_slug': config.organization.slug,
+            'session_id': serializer.validated_data['session_id'],
+        })
+
+    @action(detail=False, methods=['post'], url_path='appchat/sandbox-session')
+    def appchat_sandbox_session(self, request):
+        """
+        Issue an app-chat session token for the requester's OWN organization,
+        even when the public App Chat channel is not active yet. Used by the
+        onboarding test chat so merchants can talk to their agent before
+        publishing any channel.
+        """
+        organization = getattr(request.user, 'organization', None)
+        if organization is None:
+            return Response({'error': 'Usuario sin organización.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = PublicAppChatSessionSerializer(data={'session_id': (request.data.get('session_id') or '').strip()})
+        serializer.is_valid(raise_exception=True)
+        return Response({
+            'session_token': build_public_appchat_session_token(
+                organization.slug,
+                serializer.validated_data['session_id'],
+            ),
+            'organization_slug': organization.slug,
             'session_id': serializer.validated_data['session_id'],
         })
 

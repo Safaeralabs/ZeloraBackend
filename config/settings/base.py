@@ -19,6 +19,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-in-production-
 DEBUG = os.environ.get('DEBUG', 'False').lower() in ('1', 'true', 'yes')
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if h.strip()]
 USE_SQLITE = os.environ.get('USE_SQLITE', 'False').lower() in ('1', 'true', 'yes')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
 USE_INMEMORY_CHANNEL_LAYER = os.environ.get('USE_INMEMORY_CHANNEL_LAYER', 'False').lower() in ('1', 'true', 'yes')
 USE_LOCMEM_CACHE = os.environ.get('USE_LOCMEM_CACHE', 'False').lower() in ('1', 'true', 'yes')
 CELERY_TASK_ALWAYS_EAGER = os.environ.get('CELERY_TASK_ALWAYS_EAGER', 'False').lower() in ('1', 'true', 'yes')
@@ -186,8 +187,11 @@ else:
         'default': {
             'BACKEND': 'django.core.cache.backends.redis.RedisCache',
             'LOCATION': REDIS_URL,
+            # Django's native RedisCache forwards OPTIONS straight to
+            # ConnectionPool.from_url() — no nested CONNECTION_POOL_KWARGS key
+            # (that's the django-redis package's convention, not this one).
             'OPTIONS': {
-                'CONNECTION_POOL_KWARGS': {'max_connections': 50},
+                'max_connections': 50,
             },
             'TIMEOUT': 300,
         }
@@ -322,29 +326,44 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-# ─── S3 Storage (django-storages + boto3) ──────────────────────────────────────
+# ─── Object Storage (django-storages + boto3 — S3 or any S3-compatible API,
+# e.g. Cloudflare R2) ────────────────────────────────────────────────────────
+# Railway's container filesystem is ephemeral (wiped on every deploy) and
+# /media/ is only served by Django when DEBUG=True, so local disk storage
+# silently breaks in production: uploads "succeed" but the returned URL 404s
+# and the file vanishes on the next deploy. Product images need to stay
+# publicly and permanently reachable, so this bucket is public-read with
+# stable (non-expiring) URLs — not the presigned-private pattern.
 USE_S3 = os.environ.get('USE_S3', 'False').lower() in ('1', 'true', 'yes')
 
 if USE_S3:
     AWS_ACCESS_KEY_ID = os.environ['AWS_ACCESS_KEY_ID']
     AWS_SECRET_ACCESS_KEY = os.environ['AWS_SECRET_ACCESS_KEY']
     AWS_STORAGE_BUCKET_NAME = os.environ['AWS_STORAGE_BUCKET_NAME']
-    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')
+    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'auto')
+    # R2 (and other S3-compatible providers) need an explicit endpoint; leave
+    # blank for real AWS S3.
+    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL', '')
     AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN', f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com')
-    AWS_DEFAULT_ACL = 'private'
+    # R2 doesn't support per-object ACLs — public read is a bucket-level
+    # setting instead, so this must stay None or R2 rejects the upload.
+    AWS_DEFAULT_ACL = None
     AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
     AWS_S3_FILE_OVERWRITE = False
-    AWS_QUERYSTRING_AUTH = True
-    AWS_QUERYSTRING_EXPIRE = 3600  # 1-hour presigned URLs
+    AWS_QUERYSTRING_AUTH = False  # public bucket — stable URLs, not presigned/expiring
 
     STORAGES = {
         'default': {
             'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
             'OPTIONS': {
                 'bucket_name': AWS_STORAGE_BUCKET_NAME,
+                'endpoint_url': AWS_S3_ENDPOINT_URL or None,
+                'region_name': AWS_S3_REGION_NAME,
+                'custom_domain': AWS_S3_CUSTOM_DOMAIN,
                 'location': 'media',
                 'file_overwrite': False,
-                'default_acl': 'private',
+                'default_acl': None,
+                'querystring_auth': False,
             },
         },
         'staticfiles': {
@@ -504,9 +523,22 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.sendgrid.net')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
 EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in ('1', 'true', 'yes')
+EMAIL_USE_SSL = os.environ.get('EMAIL_USE_SSL', 'False').lower() in ('1', 'true', 'yes')
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'no-reply@vendly.ai')
+# Without this, smtplib has no socket timeout and a blocked/slow SMTP connection
+# hangs the request indefinitely — the gateway then kills it with a 502/504 that
+# never reaches our CORS middleware, which surfaces to the browser as a CORS error.
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '10'))
+
+# Django's SMTP backend also calls socket.getfqdn() to build the EHLO/HELO
+# hostname on every connection, *before* the SMTP socket (and EMAIL_TIMEOUT)
+# even exists. Railway containers have no reverse-DNS entry for their own IP,
+# so that reverse lookup can itself hang 20-30s+. Pre-seed the cache so it's
+# never attempted — the EHLO name doesn't need to be a real hostname.
+from django.core.mail.utils import DNS_NAME  # noqa: E402
+DNS_NAME._fqdn = 'zelora-backend'
 
 # ─── Feature Flags ─────────────────────────────────────────────────────────────
 ENABLE_REAL_AI = os.environ.get('ENABLE_REAL_AI', 'False').lower() in ('1', 'true', 'yes')

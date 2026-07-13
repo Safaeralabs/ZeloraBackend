@@ -137,11 +137,25 @@ class Order(models.Model):
         ('web', 'Web'),
         ('app', 'App Chat'),
     ]
+    PAYMENT_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('paid', 'Paid'),
+        ('partially_paid', 'Partially paid'),
+        ('refunded', 'Refunded'),
+        ('voided', 'Voided'),
+    ]
+    FULFILLMENT_STATUS_CHOICES = [
+        ('unfulfilled', 'Unfulfilled'),
+        ('partial', 'Partial'),
+        ('fulfilled', 'Fulfilled'),
+        ('returned', 'Returned'),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
         'accounts.Organization', on_delete=models.CASCADE, related_name='orders'
     )
+    order_number = models.PositiveIntegerField(default=0, db_index=True)
     contact = models.ForeignKey(
         'accounts.Contact', on_delete=models.SET_NULL, null=True, blank=True
     )
@@ -156,12 +170,58 @@ class Order(models.Model):
     service_location = models.CharField(max_length=255, blank=True)
     fulfillment_summary = models.JSONField(default=dict, blank=True)
     notes = models.TextField(blank=True)
+
+    # Financial breakdown
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    discount_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    shipping_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    # Payment & fulfillment status
+    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='pending')
+    fulfillment_status = models.CharField(max_length=20, choices=FULFILLMENT_STATUS_CHOICES, default='unfulfilled')
+
+    # Addresses
+    shipping_address = models.JSONField(default=dict, blank=True)
+    billing_address = models.JSONField(default=dict, blank=True)
+
+    # Extra metadata
+    payment_method = models.CharField(max_length=50, blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    tracking_number = models.CharField(max_length=200, blank=True)
+    created_by = models.ForeignKey(
+        'accounts.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='created_orders'
+    )
+    conversation = models.ForeignKey(
+        'conversations.Conversation', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='orders'
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'orders'
         ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'order_number'],
+                name='uniq_org_order_number',
+                condition=models.Q(order_number__gt=0),
+            )
+        ]
+
+    @classmethod
+    def next_order_number(cls, organization_id):
+        from django.db.models import Max
+        max_num = (
+            cls.objects.filter(organization_id=organization_id)
+            .select_for_update()
+            .aggregate(Max('order_number'))['order_number__max']
+            or 0
+        )
+        return max_num + 1
 
 
 class Promotion(models.Model):
@@ -181,6 +241,15 @@ class Promotion(models.Model):
         ('category', 'Category'),
         ('specific_products', 'Specific products'),
     ]
+    SCOPE_CHOICES = [
+        ('product', 'Product discount'),
+        ('order', 'Order discount'),
+        ('shipping', 'Shipping discount'),
+    ]
+    TRIGGER_TYPE_CHOICES = [
+        ('automatic', 'Automatic'),
+        ('code', 'Discount code'),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
@@ -188,8 +257,17 @@ class Promotion(models.Model):
     )
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
+    scope = models.CharField(max_length=20, choices=SCOPE_CHOICES, default='product')
+    trigger_type = models.CharField(max_length=20, choices=TRIGGER_TYPE_CHOICES, default='automatic')
+    code = models.CharField(max_length=80, blank=True)
     discount_type = models.CharField(max_length=20, choices=DISCOUNT_TYPE_CHOICES)
     discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    min_subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    min_qty = models.PositiveIntegerField(default=0)
+    buy_x_qty = models.PositiveIntegerField(default=0)
+    get_y_qty = models.PositiveIntegerField(default=0)
+    combinable = models.BooleanField(default=True)
+    priority = models.PositiveIntegerField(default=100)
 
     # Scope: which products this applies to
     applies_to = models.CharField(max_length=30, choices=APPLIES_TO_CHOICES, default='all_products')
@@ -209,6 +287,7 @@ class Promotion(models.Model):
         ordering = ['-updated_at']
         indexes = [
             models.Index(fields=['organization', 'is_active']),
+            models.Index(fields=['organization', 'scope', 'is_active']),
         ]
 
 
@@ -253,3 +332,53 @@ class ProductRelation(models.Model):
         indexes = [
             models.Index(fields=['organization', 'source_product']),
         ]
+
+
+class OrderLineItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='line_items')
+    product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True)
+    variant = models.ForeignKey(ProductVariant, on_delete=models.SET_NULL, null=True, blank=True)
+    title = models.CharField(max_length=200)
+    sku = models.CharField(max_length=100, blank=True)
+    quantity = models.PositiveIntegerField(default=1)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    offer_type = models.CharField(max_length=20, default='physical')
+    properties = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = 'order_line_items'
+        ordering = ['id']
+
+
+class OrderEvent(models.Model):
+    EVENT_TYPE_CHOICES = [
+        ('created', 'Order created'),
+        ('paid', 'Payment received'),
+        ('partially_paid', 'Partial payment'),
+        ('processing', 'Processing started'),
+        ('shipped', 'Shipped'),
+        ('delivered', 'Delivered'),
+        ('cancelled', 'Cancelled'),
+        ('refunded', 'Refunded'),
+        ('note_added', 'Note added'),
+        ('tag_added', 'Tag added'),
+        ('tag_removed', 'Tag removed'),
+        ('edited', 'Order edited'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='events')
+    event_type = models.CharField(max_length=30, choices=EVENT_TYPE_CHOICES)
+    message = models.TextField(blank=True)
+    actor = models.ForeignKey(
+        'accounts.User', on_delete=models.SET_NULL, null=True, blank=True
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'order_events'
+        ordering = ['created_at']

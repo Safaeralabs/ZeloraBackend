@@ -53,6 +53,14 @@ def setup_periodic_tasks(sender, **kwargs):
         name='kb-playbook-synthesis-weekly',
     )
 
+    # Sales follow-up sweep — every 30 min, nudges stale high-intent conversations
+    from apps.ai_engine.tasks import sales_followup_sweep_task
+    sender.add_periodic_task(
+        crontab(minute='*/30'),
+        sales_followup_sweep_task.s(),
+        name='sales-followup-sweep',
+    )
+
 
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):

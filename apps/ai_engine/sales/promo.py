@@ -5,6 +5,7 @@ import logging
 from typing import List, Optional
 from datetime import datetime, timezone
 
+from django.db.models import Q
 from apps.ecommerce.models import Promotion
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,11 @@ class PromoEngine:
         qs = Promotion.objects.filter(
             organization=organization,
             is_active=True,
-            starts_at__lte=now,
-        ).exclude(ends_at__lt=now)
+        ).filter(
+            Q(starts_at__isnull=True) | Q(starts_at__lte=now)
+        ).filter(
+            Q(ends_at__isnull=True) | Q(ends_at__gte=now)
+        )
 
         promos = []
 
@@ -88,10 +92,19 @@ class PromoEngine:
             'id': str(promo.id),
             'title': promo.title,
             'description': promo.description or '',
+            'scope': getattr(promo, 'scope', 'product'),
+            'trigger_type': getattr(promo, 'trigger_type', 'automatic'),
+            'code': getattr(promo, 'code', '') or '',
             'discount_type': promo.discount_type,
             'discount_value': float(promo.discount_value),
             'applies_to': promo.applies_to,
             'category': promo.category or None,
+            'min_subtotal': float(getattr(promo, 'min_subtotal', 0) or 0),
+            'min_qty': int(getattr(promo, 'min_qty', 0) or 0),
+            'buy_x_qty': int(getattr(promo, 'buy_x_qty', 0) or 0),
+            'get_y_qty': int(getattr(promo, 'get_y_qty', 0) or 0),
+            'combinable': bool(getattr(promo, 'combinable', True)),
+            'priority': int(getattr(promo, 'priority', 100) or 100),
             'starts_at': promo.starts_at.isoformat() if promo.starts_at else None,
             'ends_at': promo.ends_at.isoformat() if promo.ends_at else None,
         }

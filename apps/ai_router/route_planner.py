@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .decision_object import RouterDecision
 from .model_selector import ModelSelector
 from .schemas import (
@@ -108,8 +110,18 @@ class RoutePlanner:
                 [],
             )
 
-        # ── E-commerce: product/price/buy inquiries ────────────────────────────
+        sales_enabled = self._sales_enabled(event)
+
+        # ── E-commerce: product/price/buy inquiries → sales agent ─────────────
         if intent.intent in (IntentName.BUY_INTENT, IntentName.PRICE_INQUIRY, IntentName.PRODUCT_INQUIRY):
+            if sales_enabled:
+                return (
+                    RouteType.ROUTE_TO_SALES_AGENT,
+                    None,
+                    'sales_agent',
+                    'run_sales_agent',
+                    self._stock_check_actions(event, intent),
+                )
             return (
                 RouteType.DIRECT_AI_REPLY,
                 None,
@@ -130,6 +142,16 @@ class RoutePlanner:
 
         # ── General FAQ ────────────────────────────────────────────────────────
         if intent.intent == IntentName.GENERAL_FAQ:
+            # Mid-sale follow-up questions stay with the sales agent so the
+            # conversation (and its session state) doesn't lose the seller.
+            if sales_enabled and active_ai_agent == 'sales':
+                return (
+                    RouteType.ROUTE_TO_SALES_AGENT,
+                    None,
+                    'sales_agent',
+                    'run_sales_agent',
+                    [],
+                )
             return (
                 RouteType.DIRECT_AI_REPLY,
                 None,
@@ -149,6 +171,17 @@ class RoutePlanner:
             )
 
         if intent.intent == IntentName.UNKNOWN and event.channel in (Channel.WEB, Channel.APP):
+            # In owned digital channels the sales agent IS the storefront:
+            # greetings and ambiguous messages open the sale, never a
+            # clarification dead-end.
+            if sales_enabled:
+                return (
+                    RouteType.ROUTE_TO_SALES_AGENT,
+                    None,
+                    'sales_agent',
+                    'run_sales_agent',
+                    [],
+                )
             return (
                 RouteType.REQUEST_CLARIFICATION,
                 None,
@@ -164,6 +197,36 @@ class RoutePlanner:
             'request_more_context',
             [],
         )
+
+    @staticmethod
+    def _sales_enabled(event: NormalizedEvent) -> bool:
+        metadata = getattr(event, 'metadata', None) or {}
+        capabilities = metadata.get('agent_capabilities') or {}
+        return bool(capabilities.get('sales_enabled', True))
+
+    @staticmethod
+    def _stock_check_actions(event: NormalizedEvent, intent: IntentClassification) -> list[PostAction]:
+        """Bulk/availability buy intents get a stock-check task for operations."""
+        if intent.intent != IntentName.BUY_INTENT:
+            return []
+        text = (event.message_text or '').lower()
+        mentions_quantity = bool(re.search(r'\b\d+\s*(unidades|unidad|units|unit|uds|piezas)\b', text))
+        mentions_availability = any(
+            token in text
+            for token in ('disponibilidad', 'disponible', 'availability', 'in stock', 'stock', 'inventario')
+        )
+        if not mentions_quantity and not mentions_availability:
+            return []
+        return [
+            PostAction(
+                action_type='create_task',
+                target='operations_agent',
+                payload={
+                    'task': 'stock_check',
+                    'message_excerpt': (event.message_text or '')[:200],
+                },
+            )
+        ]
 
     def _active_ai_agent(self, event: NormalizedEvent) -> str | None:
         metadata = getattr(event, 'metadata', None) or {}

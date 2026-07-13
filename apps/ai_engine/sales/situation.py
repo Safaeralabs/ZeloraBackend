@@ -1,6 +1,6 @@
 """
 Situation Detector — LLM-based customer situation classification.
-Uses gpt-5.4-nano for fast, cheap extraction with JSON mode.
+Uses the configured situation model (default gpt-4.1-nano).
 """
 import json
 import logging
@@ -60,8 +60,15 @@ class SituationDetector:
         Returns:
             Situation string (one of the 20)
         """
+        # Hybrid layer: deterministic overrides for critical intents.
+        critical = SituationDetector._critical_override(
+            user_message=user_message,
+            session_stage=str(getattr(session, 'stage', '') or ''),
+        )
+        if critical:
+            return critical
+
         if not settings.OPENAI_API_KEY or not settings.ENABLE_REAL_AI:
-            # Fallback: detect by keywords
             return SituationDetector._fallback_detect(user_message, session)
 
         try:
@@ -123,7 +130,12 @@ Respond in JSON format:
                 f'(confidence={result.get("confidence", 0):.2f})'
             )
 
-            return situation
+            guarded = SituationDetector._post_classification_guard(
+                situation=situation,
+                user_message=user_message,
+                session_stage=str(getattr(session, 'stage', '') or ''),
+            )
+            return guarded
 
         except json.JSONDecodeError as e:
             logger.warning(f'Failed to parse situation JSON: {e}')
@@ -131,6 +143,104 @@ Respond in JSON format:
         except Exception as e:
             logger.error(f'Situation detection failed: {e}')
             return SituationDetector._fallback_detect(user_message, session)
+
+    @staticmethod
+    def _critical_override(*, user_message: str, session_stage: str) -> str:
+        """
+        Deterministic guardrails for intents where misclassification is costly.
+        Runs before the LLM call to avoid fragile stage transitions.
+        """
+        text = str(user_message or '').strip().lower()
+        if not text:
+            return ''
+
+        if SituationDetector._has_any(
+            text,
+            ('ignora', 'olvida', 'actua como', 'actúa como', 'ignore instructions', 'disregard'),
+        ):
+            return 'prompt_injection'
+
+        if SituationDetector._has_any(
+            text,
+            ('clima', 'politica', 'política', 'noticias', 'weather', 'news'),
+        ):
+            return 'off_topic'
+
+        # In checkout stage, payment/shipping signals should stay in checkout.
+        if session_stage == 'checkout' and SituationDetector._has_any(
+            text,
+            (
+                'transferencia', 'nequi', 'efectivo', 'pago',
+                'direccion', 'dirección', 'ciudad', 'correo', 'email',
+                'confirmo pedido', 'confirmar pedido',
+            ),
+        ):
+            return 'checkout'
+
+        # Exploration from checkout should be allowed explicitly.
+        if session_stage == 'checkout' and SituationDetector._has_any(
+            text,
+            (
+                'ver productos', 'ver opciones', 'otro producto', 'otros productos',
+                'similares', 'similar', 'catalogo', 'catálogo', 'que tienes', 'qué tienes',
+            ),
+        ):
+            return 'discovery'
+
+        if SituationDetector._has_any(
+            text,
+            (
+                'me lo llevo', 'me la llevo', 'lo compro', 'la compro',
+                'quiero comprar', 'quiero pagarlo', 'quiero pagar', 'comprarlo',
+            ),
+        ):
+            return 'ready_to_buy_customer'
+
+        if SituationDetector._has_any(
+            text,
+            ('vs', 'versus', 'comparar', 'diferencia', 'cual conviene', 'cuál conviene'),
+        ):
+            return 'comparing_customer'
+
+        if SituationDetector._has_any(
+            text,
+            ('precio', 'cuanto', 'cuánto', 'descuento', 'barato', 'caro'),
+        ):
+            return 'price_sensitive_customer'
+
+        if SituationDetector._has_any(
+            text,
+            ('talla', 'color', 'sku', 'referencia', 'modelo', 'este producto'),
+        ):
+            return 'specific_product_customer'
+
+        return ''
+
+    @staticmethod
+    def _post_classification_guard(*, situation: str, user_message: str, session_stage: str) -> str:
+        """
+        Post-LLM safety adjustments for common stage mistakes.
+        """
+        text = str(user_message or '').strip().lower()
+        current = str(situation or '').strip() or 'discovery'
+
+        if session_stage == 'checkout' and SituationDetector._has_any(
+            text,
+            ('ver productos', 'otro producto', 'similares', 'catalogo', 'catálogo'),
+        ):
+            return 'discovery'
+
+        if session_stage == 'checkout' and SituationDetector._has_any(
+            text,
+            ('transferencia', 'nequi', 'efectivo', 'confirmo pedido', 'confirmar pedido'),
+        ):
+            return 'checkout'
+
+        return current
+
+    @staticmethod
+    def _has_any(text: str, terms: Tuple[str, ...]) -> bool:
+        return any(term in text for term in terms)
 
     @staticmethod
     def _format_history(history: list) -> str:

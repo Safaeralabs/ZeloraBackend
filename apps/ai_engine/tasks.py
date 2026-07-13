@@ -153,12 +153,14 @@ def _extract_learnings_with_llm(conversation_text: str, organization_name: str, 
 def _generate_embedding(text: str, organization_id: str = '') -> list[float]:
     """Generate OpenAI embedding for immediate cosine search availability."""
     try:
-        import os
         import time
 
+        from django.conf import settings as django_settings
         from openai import OpenAI
 
-        api_key = os.environ.get('OPENAI_API_KEY', '')
+        # Read from Django settings (not os.environ) so the test-mode guard
+        # that blanks OPENAI_API_KEY actually prevents real API calls.
+        api_key = getattr(django_settings, 'OPENAI_API_KEY', '') or ''
         if not api_key:
             return []
         client = OpenAI(api_key=api_key)
@@ -666,14 +668,16 @@ def synthesize_playbook_from_kb(org_id: str) -> dict:
     Called after: LearningCandidate approval, periodic weekly run.
     """
     import json
-    import os
 
+    from django.conf import settings
     from openai import OpenAI
 
     from apps.channels_config.models import ChannelConfig
     from apps.knowledge_base.models import KBArticle
 
-    api_key = os.environ.get('OPENAI_API_KEY', '')
+    # Read through Django settings (not os.environ) so the test guard in
+    # development.py (ENABLE_REAL_AI=False, OPENAI_API_KEY='') applies here.
+    api_key = settings.OPENAI_API_KEY if getattr(settings, 'ENABLE_REAL_AI', False) else ''
     if not api_key:
         return {'status': 'error', 'reason': 'no_api_key'}
 
@@ -703,13 +707,13 @@ def synthesize_playbook_from_kb(org_id: str) -> dict:
 
     # Build prompt sections
     sections: list[str] = []
+    # Canonical purposes (migration 0004 consolidated objection/closing into
+    # sales_scripts and brand_voice/product_context/why_us into business).
     purpose_labels = {
         'faq': 'FAQs y Conocimiento General',
-        'objection': 'Manejo de Objeciones',
-        'closing': 'Técnicas de Cierre',
-        'brand_voice': 'Voz y Tono de Marca',
+        'business': 'Sobre el Negocio, Marca y Productos',
+        'sales_scripts': 'Manejo de Objeciones y Técnicas de Cierre',
         'policy': 'Políticas del Negocio',
-        'product_context': 'Contexto de Productos',
     }
     for purpose, snippets in grouped.items():
         label = purpose_labels.get(purpose, purpose)
@@ -995,6 +999,16 @@ try:
         logger.info('backfill_kb_embeddings_done', embedded=done)
         return {'status': 'ok', 'embedded': done}
 
+    @celery_app.task(
+        name='ai_engine.tasks.sales_followup_sweep',
+        ignore_result=True,
+        queue='ai',
+    )
+    def sales_followup_sweep_task() -> dict:
+        """Periodic task — nudge stale high-intent sales sessions (lead recovery)."""
+        from apps.ai_engine.sales.followup import FollowUpEngine
+        return FollowUpEngine.sweep()
+
 except ImportError:
     def extract_conversation_learnings(conversation_id: str) -> dict:  # type: ignore[misc]
         return run_learning_engine(conversation_id)
@@ -1010,3 +1024,7 @@ except ImportError:
 
     def backfill_kb_embeddings_task(org_id: str | None = None) -> dict:  # type: ignore[misc]
         return {'status': 'skipped', 'reason': 'celery_not_available'}
+
+    def sales_followup_sweep_task() -> dict:  # type: ignore[misc]
+        from apps.ai_engine.sales.followup import FollowUpEngine
+        return FollowUpEngine.sweep()

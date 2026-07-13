@@ -4,6 +4,8 @@ Accounts URL configuration.
 /api/auth/login/                → POST — JWT login
 /api/auth/signup/               → POST — Create org + admin user
 /api/auth/token/refresh/        → POST — Refresh JWT
+/api/auth/password-reset/request/ → POST — Send password reset email
+/api/auth/password-reset/confirm/ → POST — Set new password from reset token
 /api/auth/agents/               → GET (admin), POST (admin) — agent list/create
 /api/auth/agents/{id}/          → GET/PUT/PATCH/DELETE — agent detail
 /api/auth/agents/me/            → GET/PUT/PATCH — current agent profile
@@ -19,6 +21,10 @@ from .views import (
     LoginView,
     SignupView,
     SignupAvailabilityView,
+    VerifyEmailView,
+    ResendVerificationView,
+    PasswordResetRequestView,
+    PasswordResetConfirmView,
     AgentViewSet,
     ContactViewSet,
     OrganizationView,
@@ -37,6 +43,10 @@ urlpatterns = [
     path('login/', LoginView.as_view(), name='token_obtain_pair'),
     path('signup/', SignupView.as_view(), name='signup'),
     path('signup-availability/', SignupAvailabilityView.as_view(), name='signup-availability'),
+    path('verify-email/', VerifyEmailView.as_view(), name='verify-email'),
+    path('resend-verification/', ResendVerificationView.as_view(), name='resend-verification'),
+    path('password-reset/request/', PasswordResetRequestView.as_view(), name='password-reset-request'),
+    path('password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('token/blacklist/', TokenBlacklistView.as_view(), name='token_blacklist'),
 

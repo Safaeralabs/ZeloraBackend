@@ -9,38 +9,6 @@ Usage:
 from django.core.management.base import BaseCommand
 
 
-def _build_product_embedding_text(product) -> str:
-    """Construct rich text for product embedding (title + attrs + description)."""
-    parts = [product.title]
-
-    # Add structured fields in priority order
-    for field, val in [
-        ('brand', product.brand),
-        ('category', product.category),
-        ('subcategory', product.subcategory),
-        ('style', product.style),
-        ('formality', product.formality),
-        ('color', product.color),
-        ('material', product.material),
-        ('fit', product.fit),
-        ('target_audience', product.target_audience),
-    ]:
-        if val:
-            parts.append(val)
-
-    # Add occasion list
-    if product.occasion:
-        parts.append(', '.join(product.occasion))
-
-    # Add description snippet (first 300 chars)
-    if product.description:
-        parts.append(product.description[:300])
-
-    # Join and truncate to 512 chars (matching KB pattern)
-    text = '\n'.join(parts)[:512]
-    return text
-
-
 class Command(BaseCommand):
     help = 'Generate embedding_vector for Products that have none.'
 
@@ -55,6 +23,7 @@ class Command(BaseCommand):
 
         from openai import OpenAI
 
+        from apps.ai_engine.sales.catalog import CatalogService
         from apps.ecommerce.models import Product
 
         api_key = os.environ.get('OPENAI_API_KEY', '')
@@ -79,7 +48,7 @@ class Command(BaseCommand):
 
         for offset in range(0, total, batch_size):
             batch = list(qs[offset: offset + batch_size])
-            texts = [_build_product_embedding_text(p) for p in batch]
+            texts = [CatalogService.build_embedding_text(p) for p in batch]
 
             try:
                 response = client.embeddings.create(model='text-embedding-3-small', input=texts)

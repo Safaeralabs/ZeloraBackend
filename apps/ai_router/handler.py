@@ -45,6 +45,23 @@ def _active_ai_agent(conversation) -> str | None:
     return None
 
 
+def _sales_agent_enabled(organization) -> bool:
+    try:
+        from apps.channels_config.models import ChannelConfig
+        from apps.channels_config.settings_schema import normalise_settings
+
+        config = (
+            ChannelConfig.objects
+            .filter(organization=organization, channel='onboarding')
+            .only('settings')
+            .first()
+        )
+        settings_payload = normalise_settings((config.settings or {}) if config else {})
+        return (settings_payload.get('sales_agent') or {}).get('enabled', True)
+    except Exception:
+        return True
+
+
 def handle_inbound_message(
     *,
     conversation,
@@ -76,6 +93,9 @@ def handle_inbound_message(
             'metadata': {
                 'canal': conversation.canal,
                 'active_ai_agent': _active_ai_agent(conversation),
+                'agent_capabilities': {
+                    'sales_enabled': _sales_agent_enabled(organization),
+                },
             },
         }
 
@@ -142,21 +162,50 @@ def _execute_decision(
         executor = BlockExecutor()
     elif route == RouteType.ESCALATE_TO_HUMAN:
         executor = EscalateExecutor()
+    elif route == RouteType.ROUTE_TO_SALES_AGENT:
+        # First-class sales route: works on ANY channel (incl. WhatsApp).
+        executor = SalesAgentExecutor() if _sales_agent_enabled(organization) else DirectReplyExecutor()
     else:
         # Route to SalesAgent for app/web channels (any intent)
         # SalesAgent handles discovery, product inquiries, checkout, etc.
         if conversation.canal in ('app', 'web'):
-            executor = SalesAgentExecutor()
+            executor = SalesAgentExecutor() if _sales_agent_enabled(organization) else EscalateExecutor()
         else:
             # WhatsApp, Instagram, etc. use DirectReply
             executor = DirectReplyExecutor()
 
-    return executor.execute(
+    bot_reply = executor.execute(
         conversation=conversation,
         message=message,
         decision=decision,
         organization=organization,
     )
+
+    try:
+        metadata_getter = getattr(executor, 'get_message_metadata', None)
+        if callable(metadata_getter):
+            message_metadata = metadata_getter() or {}
+            if message_metadata:
+                decision.post_actions.append({
+                    'action_type': 'bot_message_metadata',
+                    'payload': message_metadata,
+                })
+    except Exception:
+        logger.warning('executor_message_metadata_failed')
+
+    try:
+        followup_getter = getattr(executor, 'get_followup_message', None)
+        if callable(followup_getter):
+            followup_text = followup_getter()
+            if followup_text:
+                decision.post_actions.append({
+                    'action_type': 'bot_followup_message',
+                    'payload': {'text': followup_text},
+                })
+    except Exception:
+        logger.warning('executor_followup_message_failed')
+
+    return bot_reply
 
 
 def _persist_decision(conversation, message, decision: RouterDecision, organization) -> None:

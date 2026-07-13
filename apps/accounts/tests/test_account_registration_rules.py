@@ -86,6 +86,7 @@ class AccountRegistrationRulesTests(APITestCase):
             nombre='Supervisor',
             rol='supervisor',
             organization=organization,
+            email_verified=True,
         )
 
         login = self.client.post(
