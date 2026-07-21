@@ -94,6 +94,9 @@ class HandoffHandler:
             'complexity': 'Esta es una consulta compleja. Un especialista te ayudara mejor.',
             
             'payment': 'Procesando tu compra... un especialista te guiara en los proximos pasos.',
+
+            'payment_not_configured': 'Casi cerramos tu compra, pero aun estamos habilitando los medios de pago. Un asesor te contacta enseguida para coordinar el pago y completar tu pedido.',
+
             
             'shipping_delivery_unknown': 'Dejame validarlo un momento internamente; te conecto con un asesor para confirmarte el tiempo exacto de entrega.',
             'order_modification': 'Tu pedido ya fue confirmado. Un asesor va a revisar el cambio que pediste y te contacta.',

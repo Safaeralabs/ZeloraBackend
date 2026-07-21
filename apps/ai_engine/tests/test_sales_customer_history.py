@@ -165,7 +165,7 @@ class ConversationContactRelinkingTests(TestCase):
         )
         ChannelConfig.objects.create(
             organization=self.org, channel='onboarding', is_active=True,
-            settings={'payment_methods': ['efectivo'], 'payment_settings': {'cash_enabled': True}},
+            settings={'payment_methods': ['efectivo'], 'payment_settings': {'cash_enabled': True, 'cash_instructions': 'Pagas en efectivo contra entrega.'}},
         )
         mock_detect.side_effect = ['checkout', 'checkout']
 

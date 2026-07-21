@@ -279,6 +279,131 @@ class SalesAgentIntegrationTests(TestCase):
 
     @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
     @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_bare_affirmation_binds_last_proposed_product_to_cart(self, mock_detect, mock_generate):
+        # Regression for the real "sii -> carrito vacio" dead-end: agreeing
+        # conversationally to the agent's pitch must fill the cart, not leave it
+        # empty until the customer clicks a card.
+        product = self._create_product(title='Enterizo Shape Black', category='Ropa')
+        mock_detect.side_effect = ['specific_product_customer', 'ready_to_buy_customer']
+        mock_generate.return_value = 'Claro, te cuento mas.'
+
+        turn1 = Message.objects.create(
+            conversation=self.conversation,
+            role='user',
+            content='me gusta el Enterizo Shape Black para un regalo',
+            metadata={},
+        )
+        executor = SalesAgentExecutor()
+        executor.execute(conversation=self.conversation, message=turn1, decision=None, organization=self.org)
+
+        session = SalesSession.objects.get(conversation=self.conversation)
+        # The agent proposed it but it is not in the cart yet.
+        self.assertNotIn(str(product.id), session.selected_products)
+        self.assertIn(str(product.id), (session.checkout_data or {}).get('last_recommended_ids') or [])
+
+        turn2 = Message.objects.create(
+            conversation=self.conversation, role='user', content='sii', metadata={},
+        )
+        executor.execute(conversation=self.conversation, message=turn2, decision=None, organization=self.org)
+
+        session.refresh_from_db()
+        self.assertIn(str(product.id), session.selected_products)
+
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_affirmation_binding_ignores_yes_that_carries_another_intent(self, mock_detect, mock_generate):
+        # "si, como pago?" is a question, not a cart action — it must never
+        # inject the last-proposed product into the cart.
+        product = self._create_product(title='Enterizo Shape Black', category='Ropa')
+        SalesSession.objects.create(
+            conversation=self.conversation,
+            organization=self.org,
+            stage='considering',
+            selected_products=[],
+            checkout_data={'last_recommended_ids': [str(product.id)], 'last_recommendation_browse': False},
+        )
+        mock_detect.return_value = 'specific_product_customer'
+        mock_generate.return_value = 'Con gusto te explico.'
+
+        message = Message.objects.create(
+            conversation=self.conversation, role='user', content='si, como pago?', metadata={},
+        )
+        executor = SalesAgentExecutor()
+        executor.execute(conversation=self.conversation, message=message, decision=None, organization=self.org)
+
+        session = SalesSession.objects.get(conversation=self.conversation)
+        self.assertNotIn(str(product.id), session.selected_products)
+
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_explicit_add_phrase_with_product_name_selects_it(self, mock_detect, mock_generate):
+        # "quisiera agregar el collar murano" names a product with add intent —
+        # it must actually select it, not just narrate it.
+        product = self._create_product(title='Collar Murano', category='Accesorios')
+        mock_detect.return_value = 'specific_product_customer'
+        mock_generate.return_value = 'Listo.'
+        message = Message.objects.create(
+            conversation=self.conversation, role='user',
+            content='quisiera agregar el collar murano', metadata={},
+        )
+        executor = SalesAgentExecutor()
+        executor.execute(conversation=self.conversation, message=message, decision=None, organization=self.org)
+
+        session = SalesSession.objects.get(conversation=self.conversation)
+        self.assertIn(str(product.id), session.selected_products)
+
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_checkout_without_payment_method_escalates_and_creates_no_order(self, mock_detect):
+        # No configured payment method → never create a paymentless order.
+        product = self._create_product(title='Collar Murano', category='Accesorios')
+        SalesSession.objects.create(
+            conversation=self.conversation, organization=self.org,
+            stage='checkout', selected_products=[str(product.id)],
+        )
+        # Deliberately no onboarding ChannelConfig → zero payment methods.
+        mock_detect.return_value = 'checkout'
+        message = Message.objects.create(
+            conversation=self.conversation, role='user', content='Confirmo mi pedido.',
+            metadata={'structured_payload': {'interactive': {'action': 'submit_compact_checkout', 'data': {
+                'full_name': 'Ana', 'phone': '+573001112233', 'address_line1': 'Calle 1',
+                'city': 'Bogota', 'reference': 'porteria',
+            }}}},
+        )
+        executor = SalesAgentExecutor()
+        reply = executor.execute(conversation=self.conversation, message=message, decision=None, organization=self.org)
+
+        self.assertEqual(Order.objects.filter(organization=self.org).count(), 0)
+        self.assertIn('asesor', reply.lower())
+        session = SalesSession.objects.get(conversation=self.conversation)
+        self.assertEqual(session.stage, 'handoff')
+
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_reshopping_after_completed_order_starts_a_new_cart(self, mock_detect, mock_generate):
+        # After an order is closed, selecting another product opens a NEW order —
+        # it must not attach to (or be blocked by) the already-closed one.
+        product = self._create_product(title='Collar Murano', category='Accesorios')
+        SalesSession.objects.create(
+            conversation=self.conversation, organization=self.org, stage='discovery',
+            selected_products=[],
+            checkout_data={'order_id': 'old-123', 'order_number': '781340AD', 'order_total': 25000},
+        )
+        mock_detect.return_value = 'specific_product_customer'
+        mock_generate.return_value = 'Listo.'
+        message = Message.objects.create(
+            conversation=self.conversation, role='user',
+            content='quisiera agregar el collar murano', metadata={},
+        )
+        executor = SalesAgentExecutor()
+        executor.execute(conversation=self.conversation, message=message, decision=None, organization=self.org)
+
+        session = SalesSession.objects.get(conversation=self.conversation)
+        self.assertIn(str(product.id), session.selected_products)
+        self.assertEqual(str(session.checkout_data.get('order_id') or ''), '')
+        self.assertEqual(session.checkout_data.get('last_order_number'), '781340AD')
+
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
     def test_payment_message_with_selected_product_opens_checkout_form(self, mock_detect, mock_generate):
         product = self._create_product(title='Camiseta Negra', category='Ropa')
         SalesSession.objects.create(
@@ -444,6 +569,70 @@ class SalesAgentIntegrationTests(TestCase):
         self.assertIn('cuenta', lowered)
         self.assertIn('titular', lowered)
         self.assertNotIn('producto', lowered)
+        mock_generate.assert_not_called()
+
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_post_order_nequi_payment_question_returns_nequi_details(self, mock_detect, mock_generate):
+        # Nequi orders used to fall through to the LLM (which improvised
+        # "te paso el numero por mensaje privado"). They must now deliver the
+        # configured Nequi details deterministically.
+        SalesSession.objects.create(
+            conversation=self.conversation,
+            organization=self.org,
+            stage='discovery',
+            checkout_data={
+                'order_id': 'abc-123',
+                'order_number': '9A1B2C3D',
+                'payment_method': 'nequi',
+                'payment_method_label': 'Nequi',
+                'payment_instructions': 'Numero: 3001234567. Titular: Vendly SAS.',
+            },
+        )
+        mock_detect.return_value = 'post_sale'
+        mock_generate.return_value = 'Te paso el numero por mensaje privado.'
+
+        message = Message.objects.create(
+            conversation=self.conversation, role='user', content='como hago para pagar?', metadata={},
+        )
+        executor = SalesAgentExecutor()
+        reply = executor.execute(
+            conversation=self.conversation, message=message, decision=None, organization=self.org,
+        )
+
+        lowered = reply.lower()
+        self.assertIn('3001234567', reply)
+        self.assertIn('datos para pagar', lowered)
+        self.assertNotIn('mensaje privado', lowered)
+        mock_generate.assert_not_called()
+
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_post_order_cash_payment_question_says_no_advance_payment(self, mock_detect, mock_generate):
+        SalesSession.objects.create(
+            conversation=self.conversation,
+            organization=self.org,
+            stage='discovery',
+            checkout_data={
+                'order_id': 'abc-123',
+                'order_number': '5E6F7A8B',
+                'payment_method': 'efectivo',
+                'payment_method_label': 'Efectivo',
+            },
+        )
+        mock_detect.return_value = 'post_sale'
+        mock_generate.return_value = 'Transfiere a esta cuenta.'
+
+        message = Message.objects.create(
+            conversation=self.conversation, role='user', content='como pago?', metadata={},
+        )
+        executor = SalesAgentExecutor()
+        reply = executor.execute(
+            conversation=self.conversation, message=message, decision=None, organization=self.org,
+        )
+
+        self.assertIn('efectivo', reply.lower())
+        self.assertNotIn('cuenta', reply.lower())
         mock_generate.assert_not_called()
 
     @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
@@ -815,6 +1004,43 @@ class SalesAgentIntegrationTests(TestCase):
 
     @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
     @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_photo_request_reshows_product_card_despite_cooldown(self, mock_detect, mock_generate):
+        product = self._create_product(title='Bolso Cuero', category='Accesorios')
+        SalesSession.objects.create(
+            conversation=self.conversation,
+            organization=self.org,
+            stage='discovery',
+            selected_products=[str(product.id)],
+            message_count=1,
+            checkout_data={
+                'last_products_shown_ids': [str(product.id)],
+                'last_products_shown_turn': 1,
+            },
+        )
+        mock_detect.return_value = 'specific_product_customer'
+        mock_generate.return_value = 'Claro, aqui tienes.'
+
+        message = Message.objects.create(
+            conversation=self.conversation,
+            role='user',
+            content='mandame una foto del bolso',
+            metadata={},
+        )
+
+        executor = SalesAgentExecutor()
+        executor.execute(
+            conversation=self.conversation,
+            message=message,
+            decision=None,
+            organization=self.org,
+        )
+
+        metadata = executor.get_message_metadata()
+        self.assertEqual(metadata['ui_payload']['type'], 'product_list')
+        self.assertEqual(metadata['ui_payload']['products'][0]['id'], str(product.id))
+
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
     def test_remove_cart_item_after_order_uses_fixed_post_purchase_reply(self, mock_detect, mock_generate):
         product = self._create_product(title='Llavero Azul', category='Accesorios')
         SalesSession.objects.create(
@@ -914,6 +1140,13 @@ class SalesAgentIntegrationTests(TestCase):
         self.assertIn('confirmas que cree el pedido', reply.lower())
         self.assertEqual(Order.objects.filter(organization=self.org).count(), 0)
 
+        # Structural signal: the confirm turn is flagged on the payload, so the
+        # client shows the explicit "Confirmar pedido" affordance without
+        # depending on the agent's exact wording.
+        confirm_metadata = executor.get_message_metadata()
+        self.assertEqual(confirm_metadata['ui_payload']['type'], 'checkout_compact')
+        self.assertTrue(confirm_metadata['ui_payload']['awaiting_confirmation'])
+
         confirm_message = Message.objects.create(
             conversation=self.conversation,
             role='user',
@@ -937,6 +1170,12 @@ class SalesAgentIntegrationTests(TestCase):
         self.assertEqual(order.status, 'new')
         self.assertEqual(session.stage, 'discovery')
 
+        # Structural signal that the order now exists: the client locks the cart
+        # off this, not off pattern-matching the reply text.
+        created_metadata = executor.get_message_metadata()
+        self.assertEqual(created_metadata['ui_payload']['type'], 'order_created')
+        self.assertTrue(created_metadata['ui_payload']['order_number'])
+
         # The agent must proactively say what happens next — it should not
         # wait for the customer to ask "y ahora que?".
         followup = executor.get_followup_message()
@@ -957,7 +1196,7 @@ class SalesAgentIntegrationTests(TestCase):
             organization=self.org,
             channel='onboarding',
             is_active=True,
-            settings={'payment_methods': ['efectivo'], 'payment_settings': {'cash_enabled': True}},
+            settings={'payment_methods': ['efectivo'], 'payment_settings': {'cash_enabled': True, 'cash_instructions': 'Pagas en efectivo contra entrega.'}},
         )
         mock_detect.side_effect = ['checkout', 'checkout']
 
@@ -1019,7 +1258,7 @@ class SalesAgentIntegrationTests(TestCase):
             organization=self.org,
             channel='onboarding',
             is_active=True,
-            settings={'payment_methods': ['efectivo'], 'payment_settings': {'cash_enabled': True}},
+            settings={'payment_methods': ['efectivo'], 'payment_settings': {'cash_enabled': True, 'cash_instructions': 'Pagas en efectivo contra entrega.'}},
         )
         mock_detect.side_effect = ['checkout', 'checkout', 'checkout']
 
@@ -1874,3 +2113,83 @@ class ImplicitSelectionIntentTests(SimpleTestCase):
                 SalesAgentExecutor._is_implicit_selection_intent(phrase),
                 msg=f'should NOT detect buy intent in: {phrase!r}',
             )
+
+
+class QualificationGuardIntegrationTests(TestCase):
+    """
+    End-to-end reproduction of the rosado_joyeria transcript (2026-07-19
+    analysis): a customer asks for a photo and price of every item. The
+    executor should ask for budget instead of running a catalog search, then
+    capture the budget once given.
+    """
+
+    def setUp(self):
+        self.org = Organization.objects.create(name='Joyeria Org', slug='joyeria-org')
+        self.conversation = Conversation.objects.create(
+            organization=self.org,
+            canal='web',
+            estado='nuevo',
+        )
+        Product.objects.create(
+            organization=self.org,
+            title='Cadena de oro',
+            category='Cadenas',
+            status='active',
+            is_active=True,
+        )
+
+    @patch('apps.ai_engine.sales.catalog.CatalogService.resolve_query')
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_unbounded_request_asks_budget_instead_of_searching(
+        self, mock_detect, mock_generate, mock_resolve_query,
+    ):
+        mock_detect.return_value = 'gift_customer'
+        mock_generate.return_value = '¿Cuál sería tu presupuesto aproximado?'
+
+        message = Message.objects.create(
+            conversation=self.conversation,
+            role='user',
+            content='Mandame foto y Presio de cada una',
+            metadata={},
+        )
+
+        executor = SalesAgentExecutor()
+        reply = executor.execute(
+            conversation=self.conversation,
+            message=message,
+            decision=None,
+            organization=self.org,
+        )
+
+        self.assertEqual(reply, '¿Cuál sería tu presupuesto aproximado?')
+        mock_resolve_query.assert_not_called()
+        metadata = executor.get_message_metadata()
+        self.assertNotIn('ui_payload', metadata)
+
+        session = SalesSession.objects.get(conversation=self.conversation)
+        self.assertIsNone(session.budget_max)
+
+    @patch('apps.ai_engine.sales.generator.ResponseGenerator.generate')
+    @patch('apps.ai_engine.sales.situation.SituationDetector.detect')
+    def test_budget_reply_is_captured_on_session(self, mock_detect, mock_generate):
+        mock_detect.return_value = 'gift_customer'
+        mock_generate.return_value = 'Perfecto, con ese presupuesto te muestro opciones.'
+
+        message = Message.objects.create(
+            conversation=self.conversation,
+            role='user',
+            content='$300',
+            metadata={},
+        )
+
+        executor = SalesAgentExecutor()
+        executor.execute(
+            conversation=self.conversation,
+            message=message,
+            decision=None,
+            organization=self.org,
+        )
+
+        session = SalesSession.objects.get(conversation=self.conversation)
+        self.assertEqual(float(session.budget_max), 300.0)

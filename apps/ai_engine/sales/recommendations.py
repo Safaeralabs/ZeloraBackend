@@ -108,6 +108,9 @@ class RecommendationEngine:
                         score += 0.15
 
                 if str(target.id) not in candidates:
+                    # Tag the product dict with the relation so downstream
+                    # (LLM prompt, cards) can explain WHY it's recommended.
+                    enriched['recommendation_relation'] = relation.relation_type
                     candidates[str(target.id)] = {
                         'product': enriched,
                         'relation_type': relation.relation_type,
@@ -119,6 +122,7 @@ class RecommendationEngine:
                     if score > candidates[str(target.id)]['score']:
                         candidates[str(target.id)]['score'] = score
                         candidates[str(target.id)]['relation_type'] = relation.relation_type
+                        candidates[str(target.id)]['product']['recommendation_relation'] = relation.relation_type
 
             # Sort by score
             sorted_candidates = sorted(

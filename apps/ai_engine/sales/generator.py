@@ -13,6 +13,18 @@ from .brand import BrandVoice
 logger = logging.getLogger(__name__)
 
 
+# How the agent should talk about each relation when recommending. The merchant
+# configures the relation type in the catalog; this turns it into a talk-track
+# so the LLM cross-sells/upsells with intent instead of listing products flat.
+RELATION_TALK_TRACKS = {
+    'combina_con': 'combina bien con lo que el cliente ya lleva — ofrécelo como complemento natural',
+    'bundle_con': 'forma un combo con lo que el cliente lleva — ofrécelo como paquete',
+    'alternativa_premium': 'es la opción superior — ofrécela como mejora si el cliente busca más calidad',
+    'alternativa_barata': 'es la opción más económica — ofrécela si el cliente duda por el precio',
+    'similar_a': 'es una opción parecida — ofrécela si el cliente quiere ver más alternativas',
+}
+
+
 class ResponseGenerator:
     """
     Generates natural, sales-focused responses.
@@ -184,11 +196,22 @@ class ResponseGenerator:
         ]
 
         lines += BrandVoice.conversational_style_lines(runtime_config)
+        lines += BrandVoice.voice_card_lines(runtime_config)
+        lines += BrandVoice.burst_protocol_lines(runtime_config)
         lines += BrandVoice.identity_lines(runtime_config)
         lines += BrandVoice.voice_example_lines(runtime_config)
         lines += BrandVoice.seller_directives(runtime_config)
 
-        if not has_products:
+        if action.get('qualify_question') == 'budget':
+            lines += [
+                '## IMPORTANTE: Pregunta primero antes de mostrar catalogo',
+                'El cliente pidio ver fotos/precios de TODO. No listes el catalogo completo ni digas '
+                'que eso es imposible: en vez de eso, has UNA sola pregunta breve pidiendo su presupuesto '
+                'aproximado (y para quien es, si parece un regalo), como haria un buen vendedor humano. '
+                'No menciones productos especificos en este turno.',
+                '',
+            ]
+        elif not has_products:
             lines += [
                 '## IMPORTANTE: Sin productos disponibles',
                 'No hay productos en el catalogo que coincidan con lo que el cliente pide.',
@@ -213,7 +236,7 @@ class ResponseGenerator:
                 'Estos productos SI existen en el catalogo, no le digas al cliente que no los tienes.',
                 'Dile con tu propio tono (el definido arriba) que estan agotados en este momento.',
                 'Nunca los ofrezcas como si pudiera comprarlos ya ni des fecha de reposicion que no conoces.',
-                'Ofrece avisarle cuando vuelva a haber stock, o sugierele algo similar de "## Productos disponibles" si aplica.',
+                'No prometas avisarle cuando vuelva (no puedes hacerlo). En su lugar sugiere algo similar de "## Productos disponibles" si aplica.',
                 '',
             ]
 
@@ -300,6 +323,25 @@ class ResponseGenerator:
                 'Si el metodo confirmado es transferencia bancaria, despues del pago pide una captura '
                 'de pantalla del comprobante y explica que validaran el pago.'
             )
+            lines.append(
+                'Reglas de pago (obligatorias): este chat es el unico canal. NUNCA digas que enviaras '
+                'los datos "por mensaje privado", "por interno" ni "por DM". NUNCA inventes numeros, '
+                'cuentas ni titulares: usa solo los datos de arriba. Los datos exactos de pago se '
+                'entregan al confirmar el pedido; antes de que el pedido exista, guia al cliente a '
+                'completar sus datos y confirmar en vez de prometer "te paso el numero luego".'
+            )
+            lines.append('')
+        else:
+            # No configured payment method: the agent has nothing real to offer,
+            # so it must not invent one (this is exactly how "podemos recibir por
+            # Nequi, te envio los detalles" leaked with zero methods set up).
+            lines.append('## Metodos de pago')
+            lines.append(
+                'La tienda NO tiene ningun metodo de pago habilitado todavia. NUNCA ofrezcas Nequi, '
+                'transferencia ni efectivo, NUNCA inventes datos de pago ni digas que enviaras detalles, '
+                'y NO cierres la venta. Si el cliente quiere pagar, dile con naturalidad que en un momento '
+                'un asesor coordina el pago para completar su pedido.'
+            )
             lines.append('')
 
         cart_event = context.get('cart_event') or {}
@@ -371,11 +413,25 @@ class ResponseGenerator:
             for product in context['recommended_products'][:3]:
                 price_str = f"${product['price_min']}" if product.get('price_min') else 'Consultar precio'
                 desc = product.get('description', '')[:80]
-                lines.append(f"- **{product['title']}**: {price_str}")
+                size_note = ' [requiere talla/medida del cliente]' if product.get('requires_size') else ''
+                lines.append(f"- **{product['title']}**: {price_str}{size_note}")
                 if desc:
                     lines.append(f"  {desc}")
                 if product.get('promotion'):
                     lines.append(f"  Promocion: {product['promotion']['title']}")
+            lines.append('')
+            if context.get('has_unsized_size_dependent_products'):
+                lines.append(
+                    'Algunas opciones de arriba requieren talla/medida y el cliente aun no la dio. '
+                    'Si no la conoces, prioriza recomendar primero las opciones que NO la requieren '
+                    '(marcadas sin "[requiere talla/medida]") y explica brevemente por que si preguntan.'
+                )
+                lines.append('')
+
+        relation_recs = context.get('relation_recommendations') or {}
+        relation_lines = ResponseGenerator._build_relation_guidance(relation_recs)
+        if relation_lines:
+            lines.extend(relation_lines)
             lines.append('')
 
         if context.get('promotions'):
@@ -390,6 +446,32 @@ class ResponseGenerator:
             lines.append(f'## Estrategia: {guidance}')
 
         return '\n'.join(lines)
+
+    @staticmethod
+    def _build_relation_guidance(relation_recs: dict) -> list:
+        """Turn the merchant's product connections into explicit cross-sell /
+        upsell talk-tracks. Only products already in the whitelist appear here,
+        so this guides HOW to offer them, never introduces new products."""
+        if not isinstance(relation_recs, dict):
+            return []
+        bundle = [p for p in (relation_recs.get('bundle') or []) if isinstance(p, dict)]
+        alternatives = [p for p in (relation_recs.get('alternatives') or []) if isinstance(p, dict)]
+        if not bundle and not alternatives:
+            return []
+
+        out = ['## Cómo recomendar (según las conexiones del catálogo)']
+        seen = set()
+        for product in (bundle + alternatives):
+            title = str(product.get('title') or '').strip()
+            relation = product.get('recommendation_relation')
+            track = RELATION_TALK_TRACKS.get(relation)
+            key = (title, relation)
+            if not title or not track or key in seen:
+                continue
+            seen.add(key)
+            out.append(f'- **{title}**: {track}.')
+        out.append('Ofrécelos con naturalidad solo si vienen al caso; no fuerces la venta.')
+        return out if len(out) > 2 else []
 
     @staticmethod
     def _build_messages(conversation_history: list, user_message: str) -> list:

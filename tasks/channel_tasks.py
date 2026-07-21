@@ -161,6 +161,149 @@ def send_whatsapp_message(
 
 @shared_task(
     bind=True,
+    name='tasks.channel_tasks.send_whatsapp_image_message',
+    max_retries=3,
+    default_retry_delay=30,
+    queue='channels',
+)
+def send_whatsapp_image_message(
+    self,
+    phone: str,
+    image_url: str,
+    caption: str,
+    org_id: str,
+    conv_id: str | None = None,
+) -> dict:
+    """
+    Send a product photo via WhatsApp (Meta Cloud API `type: image`).
+
+    Closes a channel-parity gap: product cards (ui_payload) only ever
+    rendered on App Chat/Web Widget because this task previously sent text
+    only. A WhatsApp customer who asks "mandame fotos" now actually gets a
+    photo instead of a text description of one — see
+    _dispatch_whatsapp_post_actions, which calls this for the product cards
+    the sales agent attaches to a reply.
+    """
+    try:
+        from apps.channels_config.models import ChannelConfig
+
+        cfg = ChannelConfig.objects.get(
+            organization_id=org_id,
+            channel='whatsapp',
+            is_active=True,
+        )
+
+        creds = cfg.credentials
+        api_token = creds.get('api_token') or creds.get('access_token', '')
+        phone_number_id = creds.get('phone_number_id', '')
+        normalized_phone = normalize_phone(phone)
+
+        if not phone_number_id or not normalized_phone or not image_url:
+            raise ValueError(f'WhatsApp image send missing data for org {org_id}')
+
+        if not getattr(settings, 'ENABLE_REAL_WHATSAPP', False):
+            logger.info(
+                'whatsapp_image_sent_simulated', org_id=org_id, conv_id=conv_id,
+                phone=normalized_phone[-4:],
+            )
+            return {'status': 'ok', 'simulated': True}
+
+        if not api_token:
+            raise ValueError(f'WhatsApp credentials incomplete for org {org_id}')
+
+        url = f'{WHATSAPP_BASE_URL}/{WHATSAPP_API_VERSION}/{phone_number_id}/messages'
+        headers = {
+            'Authorization': f'Bearer {api_token}',
+            'Content-Type': 'application/json',
+        }
+        payload = {
+            'messaging_product': 'whatsapp',
+            'to': normalized_phone,
+            'type': 'image',
+            'image': {'link': image_url, 'caption': (caption or '')[:1024]},
+        }
+
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+        wa_msg_id = data.get('messages', [{}])[0].get('id', '')
+        logger.info(
+            'whatsapp_image_sent', org_id=org_id, wa_msg_id=wa_msg_id, conv_id=conv_id,
+            phone=normalized_phone[-4:],
+        )
+        return {'status': 'ok', 'wa_message_id': wa_msg_id}
+
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            'whatsapp_image_send_http_error',
+            status=exc.response.status_code,
+            body=exc.response.text[:500],
+        )
+        raise self.retry(exc=exc)
+
+    except httpx.RequestError as exc:
+        logger.error('whatsapp_image_send_network_error', error=str(exc))
+        raise self.retry(exc=exc)
+
+    except Exception as exc:
+        logger.error('whatsapp_image_send_fatal', error=str(exc), exc_info=True)
+        raise
+
+
+def _whatsapp_product_caption(product: dict) -> str:
+    title = str(product.get('title') or '').strip()
+    price = product.get('price_min')
+    if price:
+        try:
+            return f'{title} — ${float(price):,.0f}'
+        except (TypeError, ValueError):
+            return title
+    return title
+
+
+def _dispatch_whatsapp_post_actions(decision, phone: str, org_id, conv_id) -> None:
+    """
+    The sales agent attaches structured extras to a reply as post_actions on
+    the router decision: product cards with photos (bot_message_metadata /
+    ui_payload) and extra chat bubbles (bot_followup_message, e.g. burst
+    replies or the post-order follow-up). App Chat/Web already render both;
+    this is what makes WhatsApp do the same instead of only ever getting the
+    single text reply.
+    """
+    post_actions = getattr(decision, 'post_actions', None) or []
+    for post_action in post_actions:
+        action_type = post_action.get('action_type')
+        payload = post_action.get('payload') or {}
+
+        if action_type == 'bot_message_metadata':
+            ui_payload = payload.get('ui_payload') or {}
+            products = ui_payload.get('products') or []
+            for product in products[:2]:
+                image_url = str(product.get('image_url') or '').strip()
+                if not image_url.lower().startswith('http'):
+                    continue
+                try:
+                    send_whatsapp_image_message.delay(
+                        phone, image_url, _whatsapp_product_caption(product),
+                        str(org_id), str(conv_id),
+                    )
+                except Exception:
+                    logger.warning('whatsapp_product_image_dispatch_failed', conv_id=str(conv_id))
+
+        elif action_type == 'bot_followup_message':
+            text = str(payload.get('text') or '').strip()
+            if not text:
+                continue
+            try:
+                send_whatsapp_message.delay(phone, text, str(org_id), str(conv_id))
+            except Exception:
+                logger.warning('whatsapp_followup_dispatch_failed', conv_id=str(conv_id))
+
+
+@shared_task(
+    bind=True,
     name='tasks.channel_tasks.process_incoming_webhook',
     max_retries=2,
     default_retry_delay=5,
@@ -318,6 +461,12 @@ def _process_whatsapp_webhook(payload: dict, org) -> dict:
                                 )
                             except Exception as wa_err:
                                 logger.warning('whatsapp_bot_reply_send_failed', error=str(wa_err))
+
+                            # Product photos + extra bubbles (burst replies,
+                            # post-order follow-up): previously silently
+                            # dropped on WhatsApp, only ever rendered on
+                            # App Chat/Web. See _dispatch_whatsapp_post_actions.
+                            _dispatch_whatsapp_post_actions(decision, phone, org.id, conv.id)
                     # Broadcast to agents
                     _broadcast_new_message_event(org.id, conv.id)
                     processed += 1

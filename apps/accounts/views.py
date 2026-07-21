@@ -437,6 +437,13 @@ class SignupView(generics.CreateAPIView):
             plan=plan,
         )
 
+        # Arranca la prueba de 7 días (nunca bloquea el registro si falla).
+        try:
+            from apps.billing.services import start_trial
+            start_trial(org)
+        except Exception as exc:
+            logger.warning('trial_subscription_failed', org_id=str(org.id), error=str(exc))
+
         # Create admin user
         user = User.objects.create_user(
             email=email,
@@ -486,19 +493,34 @@ class VerifyEmailView(generics.GenericAPIView):
         except (EmailVerificationToken.DoesNotExist, Exception):
             return Response({'error': 'Invalid or expired verification link'}, status=status.HTTP_400_BAD_REQUEST)
 
+        user = token_obj.user
+
         if not token_obj.is_valid():
+            if user.email_verified:
+                # The token was already consumed once — most likely an email
+                # security scanner (Outlook Safe Links, Mail link previews,
+                # etc.) prefetched the link and completed verification before
+                # the human clicked it. The account IS verified, so treat this
+                # as success instead of showing a false "expired" error.
+                logger.info('email_verified_idempotent_replay', user_id=str(user.id))
+                return Response(self._issue_session(user))
             return Response(
                 {'error': 'Este enlace ya fue usado o ha expirado. Solicita uno nuevo.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = token_obj.user
         token_obj.used = True
         token_obj.save(update_fields=['used'])
 
         user.email_verified = True
         user.email_verified_at = timezone.now()
         user.save(update_fields=['email_verified', 'email_verified_at'])
+
+        logger.info('email_verified', user_id=str(user.id))
+        return Response(self._issue_session(user))
+
+    def _issue_session(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
 
         refresh = RefreshToken.for_user(user)
         refresh['nombre'] = user.nombre
@@ -508,8 +530,7 @@ class VerifyEmailView(generics.GenericAPIView):
         refresh['org_name'] = user.organization.name if user.organization_id else ''
         refresh['is_available'] = user.is_available
 
-        logger.info('email_verified', user_id=str(user.id))
-        return Response({
+        return {
             'access': str(refresh.access_token),
             'refresh': str(refresh),
             'user': {
@@ -519,7 +540,7 @@ class VerifyEmailView(generics.GenericAPIView):
                 'email': user.email,
                 'rol': user.rol,
             },
-        })
+        }
 
 
 class ResendVerificationView(generics.GenericAPIView):
@@ -725,10 +746,11 @@ class AgentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         org = self.request.user.organization
-        if org.active_agent_count >= org.max_agents:
+        limit = org.agent_limit
+        if org.active_agent_count >= limit:
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied(
-                f'Agent limit reached ({org.max_agents}). Upgrade your plan to add more agents.'
+                f'Llegaste al límite de asientos de tu plan ({limit}). Sube de plan para agregar más.'
             )
         agent = serializer.save(organization=org)
         logger.info('agent_created', org_id=str(org.id), email=serializer.validated_data.get('email'))

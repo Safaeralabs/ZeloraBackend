@@ -320,6 +320,8 @@ class CatalogService:
             'price_type': product.price_type,
             'requires_shipping': product.requires_shipping,
             'is_bestseller': product.is_bestseller or False,
+            'requires_size': bool(product.requires_size),
+            'made_to_order': bool(product.made_to_order),
             'occasion': product.occasion or [],
             'style': product.style or '',
             'image_url': image_url,

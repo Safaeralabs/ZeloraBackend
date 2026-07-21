@@ -54,6 +54,14 @@ class Product(models.Model):
     target_audience = models.CharField(max_length=100, blank=True)  # e.g., "adult men", "young women"
     is_bestseller = models.BooleanField(default=False)
     popularity_score = models.FloatField(default=0.0)  # 0–100, manual or auto-computed
+    requires_size = models.BooleanField(
+        default=False,
+        help_text='Needs a size/measurement from the customer before it can be confirmed (rings, clothing with fixed sizing, etc.)',
+    )
+    made_to_order = models.BooleanField(
+        default=False,
+        help_text='Custom/handmade per order rather than sold from fixed stock (e.g. personalized jewelry).',
+    )
     embedding_vector = models.JSONField(default=list, blank=True)  # text-embedding-3-small, list of floats
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -319,6 +327,21 @@ class ProductRelation(models.Model):
     relation_type = models.CharField(max_length=30, choices=RELATION_TYPE_CHOICES)
     weight = models.FloatField(default=1.0)  # relevance 0–1
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # Each relation implies a reverse relation on the target product. Symmetric
+    # types map to themselves; the premium/budget pair maps to each other (if B
+    # is a premium alternative of A, then A is a budget alternative of B). The
+    # ViewSet keeps both rows in sync so the recommendation engine — which only
+    # traverses source_product — resolves the graph in both directions and the
+    # merchant never has to think about direction.
+    INVERSE_RELATION_TYPE = {
+        'combina_con': 'combina_con',
+        'bundle_con': 'bundle_con',
+        'similar_a': 'similar_a',
+        'evita_con': 'evita_con',
+        'alternativa_premium': 'alternativa_barata',
+        'alternativa_barata': 'alternativa_premium',
+    }
 
     class Meta:
         db_table = 'product_relations'

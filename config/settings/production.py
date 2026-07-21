@@ -6,6 +6,24 @@ from .base import *  # noqa: F401, F403
 
 DEBUG = False
 
+# ─── Static files: WhiteNoise ──────────────────────────────────────────────────
+# Railway runs the container directly behind its edge proxy — there's no
+# separate web server (nginx) or CDN serving /static/, so without WhiteNoise
+# collectstatic writes files that nothing ever serves (this is why Django
+# admin loaded with no CSS).
+# Django 5's STORAGES dict and the legacy STATICFILES_STORAGE setting are
+# mutually exclusive — base.py already defines STORAGES (media → S3/R2 when
+# USE_S3 is set), so only the 'staticfiles' entry is overridden here rather
+# than reassigning STATICFILES_STORAGE.
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+] + MIDDLEWARE[1:]  # noqa: F405
+STORAGES = globals().get('STORAGES', {  # noqa: F405
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+})
+STORAGES['staticfiles'] = {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'}
+
 # ─── Security headers ──────────────────────────────────────────────────────────
 SECURE_SSL_REDIRECT = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

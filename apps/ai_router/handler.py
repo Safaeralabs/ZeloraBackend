@@ -194,14 +194,26 @@ def _execute_decision(
         logger.warning('executor_message_metadata_failed')
 
     try:
-        followup_getter = getattr(executor, 'get_followup_message', None)
-        if callable(followup_getter):
-            followup_text = followup_getter()
-            if followup_text:
-                decision.post_actions.append({
-                    'action_type': 'bot_followup_message',
-                    'payload': {'text': followup_text},
-                })
+        followups_getter = getattr(executor, 'get_followup_messages', None)
+        if callable(followups_getter):
+            # Multi-bubble turns: burst parts and/or the post-order followup,
+            # one post_action per extra bubble, in order.
+            for followup in followups_getter() or []:
+                text = str((followup or {}).get('text') or '').strip()
+                if text:
+                    decision.post_actions.append({
+                        'action_type': 'bot_followup_message',
+                        'payload': {'text': text, 'kind': str(followup.get('kind') or 'followup')},
+                    })
+        else:
+            followup_getter = getattr(executor, 'get_followup_message', None)
+            if callable(followup_getter):
+                followup_text = followup_getter()
+                if followup_text:
+                    decision.post_actions.append({
+                        'action_type': 'bot_followup_message',
+                        'payload': {'text': followup_text},
+                    })
     except Exception:
         logger.warning('executor_followup_message_failed')
 

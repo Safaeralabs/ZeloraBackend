@@ -67,6 +67,56 @@ class MvpExtendedTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
 
+    def _configure_payment(self, *, complete: bool):
+        ChannelConfig.objects.create(
+            organization=self.organization,
+            channel='onboarding',
+            is_active=True,
+            settings={
+                'payment_methods': ['nequi'],
+                'payment_settings': (
+                    {'nequi_number': '3001234567', 'nequi_holder': 'Vendly SAS'}
+                    if complete else {}
+                ),
+            },
+        )
+
+    def test_channel_activation_requires_configured_payment_method(self):
+        self.authenticate()
+
+        # No payment method configured → activating the channel is rejected.
+        blocked = self.client.patch(
+            '/api/channels/appchat/connection/', {'is_active': True}, format='json'
+        )
+        self.assertEqual(blocked.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('metodo de pago', str(blocked.data).lower())
+
+        # Configure a real payment method → activation now succeeds.
+        self._configure_payment(complete=True)
+        ok = self.client.patch(
+            '/api/channels/appchat/connection/', {'is_active': True}, format='json'
+        )
+        self.assertEqual(ok.status_code, status.HTTP_200_OK)
+        self.assertTrue(ok.data.get('is_active'))
+
+    def test_channel_activation_blocked_when_payment_method_incomplete(self):
+        self.authenticate()
+        # Method listed but its required details are missing → still blocked.
+        self._configure_payment(complete=False)
+        resp = self.client.patch(
+            '/api/channels/appchat/connection/', {'is_active': True}, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_deactivating_channel_is_never_blocked_by_payment(self):
+        self.authenticate()
+        # Turning a channel OFF must always be allowed, regardless of payment.
+        resp = self.client.patch(
+            '/api/channels/appchat/connection/', {'is_active': False}, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(resp.data.get('is_active'))
+
     def test_database_connection_lookup_and_kb_document_upload(self):
         self.authenticate()
 

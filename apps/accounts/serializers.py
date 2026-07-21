@@ -51,6 +51,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class OrganizationSerializer(serializers.ModelSerializer):
     active_agent_count = serializers.ReadOnlyField()
+    subscription = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
@@ -58,12 +59,37 @@ class OrganizationSerializer(serializers.ModelSerializer):
             'id', 'name', 'slug', 'industry', 'country', 'website', 'logo',
             'plan', 'max_agents', 'monthly_message_limit',
             'whatsapp_number', 'timezone', 'is_active',
-            'active_agent_count', 'created_at', 'updated_at',
+            'active_agent_count', 'subscription', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'slug', 'created_at', 'updated_at', 'active_agent_count']
+        read_only_fields = ['id', 'slug', 'created_at', 'updated_at', 'active_agent_count', 'subscription']
         extra_kwargs = {
             # Never expose the raw API token in responses
             'whatsapp_api_token': {'write_only': True},
+        }
+
+    def get_subscription(self, obj):
+        """Plan comercial vigente (fuente de verdad del billing) para 'ver quién es pro'."""
+        sub = obj.active_subscription
+        if not sub:
+            return None
+        from apps.billing.services import TRIAL_CONVERSATION_CAP
+        trial_exhausted = bool(sub.is_trial and sub.conversations_used >= TRIAL_CONVERSATION_CAP)
+        return {
+            'plan_name': sub.plan.name,
+            'plan_slug': sub.plan.slug,
+            'status': sub.status,
+            'is_trial': sub.is_trial,
+            'trial_active': sub.is_trial_active,
+            'trial_ends_at': sub.trial_ends_at,
+            'trial_conversation_cap': TRIAL_CONVERSATION_CAP if sub.is_trial else None,
+            'trial_exhausted': trial_exhausted,
+            'conversations_used': sub.conversations_used,
+            'included_conversations': sub.included_conversations,
+            'conversations_remaining': sub.conversations_remaining,
+            'in_payg': sub.in_payg,
+            'overage_conversations': sub.overage_conversations,
+            'overage_amount_cop': int(sub.overage_amount_cop or 0),
+            'spend_ceiling_reached': sub.spend_ceiling_reached,
         }
 
 

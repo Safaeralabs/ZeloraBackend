@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from apps.ai_engine.models import SalesSession
 from apps.conversations.models import Conversation, Message
+from .budget import extract_budget
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,10 @@ class SessionManager:
             'detected_objections': [],
             'shipping_city': '',
         }
+
+        budget = extract_budget(text)
+        if budget:
+            signals['detected_budget'] = budget
 
         objection_patterns = {
             'price': ['caro', 'costoso', 'precio alto', 'muy costoso'],

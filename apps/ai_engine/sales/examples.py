@@ -41,6 +41,18 @@ class ExampleBank:
         stage: str = '',
         max_examples: int = 2,
     ) -> str:
+        """Formatted few-shot text only (see fetch_details for telemetry)."""
+        return ExampleBank.fetch_details(
+            organization, query=query, stage=stage, max_examples=max_examples,
+        )['text']
+
+    @staticmethod
+    def fetch_details(
+        organization,
+        query: str = '',
+        stage: str = '',
+        max_examples: int = 2,
+    ) -> dict:
         """
         Fetch the best matching examples for the current turn.
 
@@ -51,11 +63,14 @@ class ExampleBank:
             max_examples: Max examples to include
 
         Returns:
-            Formatted 'Cliente: .../Marca: ...' pairs, or '' when the org
-            has no approved examples yet.
+            {'text': formatted 'Cliente: .../Marca: ...' pairs ('' when the
+             org has no approved examples yet),
+             'ids': ids of the candidates actually injected — the outcome
+             learner rewards these when the conversation ends in an Order}
         """
         from apps.analytics.models import LearningCandidate
 
+        empty = {'text': '', 'ids': []}
         candidates = list(
             LearningCandidate.objects.filter(
                 organization=organization,
@@ -64,7 +79,7 @@ class ExampleBank:
             ).order_by('-confidence', '-updated_at')[:40]
         )
         if not candidates:
-            return ''
+            return empty
 
         ranked = None
         if query:
@@ -72,9 +87,10 @@ class ExampleBank:
         if ranked is None:
             ranked = ExampleBank._stage_rank(candidates, stage, max_examples)
         if not ranked:
-            return ''
+            return empty
 
         lines: List[str] = []
+        used_ids: List[str] = []
         for candidate in ranked:
             question = ' '.join((candidate.source_question or '').split())[:220]
             answer = ' '.join((candidate.proposed_answer or '').split())[:320]
@@ -83,8 +99,27 @@ class ExampleBank:
             lines.append(f'Cliente: "{question}"')
             lines.append(f'Marca: "{answer}"')
             lines.append('')
+            used_ids.append(str(candidate.id))
 
-        return '\n'.join(lines).strip()
+        if used_ids:
+            ExampleBank._record_usage(used_ids)
+        return {'text': '\n'.join(lines).strip(), 'ids': used_ids}
+
+    @staticmethod
+    def _record_usage(candidate_ids: List[str]) -> None:
+        """Usage telemetry: how often an example reaches a prompt. Combined
+        with win rewards (outcome_learning) this ranks examples by what
+        actually sells instead of extraction-time confidence alone."""
+        from apps.analytics.models import LearningCandidate
+
+        try:
+            for candidate in LearningCandidate.objects.filter(id__in=candidate_ids):
+                meta = dict(candidate.metadata or {})
+                meta['uses'] = int(meta.get('uses') or 0) + 1
+                candidate.metadata = meta
+                candidate.save(update_fields=['metadata'])
+        except Exception as exc:
+            logger.debug('example_usage_tracking_failed: %s', exc)
 
     @staticmethod
     def _semantic_rank(

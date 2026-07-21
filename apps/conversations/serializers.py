@@ -152,6 +152,13 @@ def serialize_message_ui_payload(metadata):
             'initial_values': initial_values,
             'required_fields': ui_payload.get('required_fields') or [],
             'payment_options': payment_options,
+            'awaiting_confirmation': bool(ui_payload.get('awaiting_confirmation')),
+        }
+
+    if ui_payload.get('type') == 'order_created':
+        return {
+            'type': 'order_created',
+            'order_number': str(ui_payload.get('order_number') or ''),
         }
 
     if ui_payload.get('type') == 'checkout_shipping_form':

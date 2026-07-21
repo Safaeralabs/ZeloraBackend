@@ -9,6 +9,7 @@ from django.conf import settings
 import openai
 
 from .llm_router import LLMRouter
+from .text_normalize import normalize_for_matching
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,8 @@ class ProductQueryInterpreter:
 
     @staticmethod
     def _normalize(value: str) -> str:
-        return re.sub(r'\s+', ' ', (value or '').strip().lower())
+        cleaned = normalize_for_matching(value or '')
+        return re.sub(r'\s+', ' ', cleaned.strip().lower())
 
     @staticmethod
     def _clean_terms(values) -> list[str]:

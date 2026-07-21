@@ -10,6 +10,7 @@ from django.conf import settings
 import openai
 
 from .llm_router import LLMRouter
+from .text_normalize import normalize_for_matching
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ Respond in JSON format:
         Deterministic guardrails for intents where misclassification is costly.
         Runs before the LLM call to avoid fragile stage transitions.
         """
-        text = str(user_message or '').strip().lower()
+        text = normalize_for_matching(str(user_message or '')).strip().lower()
         if not text:
             return ''
 
@@ -221,7 +222,7 @@ Respond in JSON format:
         """
         Post-LLM safety adjustments for common stage mistakes.
         """
-        text = str(user_message or '').strip().lower()
+        text = normalize_for_matching(str(user_message or '')).strip().lower()
         current = str(situation or '').strip() or 'discovery'
 
         if session_stage == 'checkout' and SituationDetector._has_any(
@@ -271,7 +272,7 @@ Respond in JSON format:
         Returns:
             Situation string
         """
-        msg_lower = user_message.lower()
+        msg_lower = normalize_for_matching(user_message).lower()
 
         # Simple heuristic detection
         if any(w in msg_lower for w in ['comprar', 'quiero', 'checkout', 'pagar']):

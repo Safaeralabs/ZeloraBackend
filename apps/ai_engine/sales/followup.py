@@ -5,12 +5,13 @@ A real salesperson does not wait in silence: when a customer with buying
 intent (considering/checkout) goes quiet, the agent sends one gentle,
 brand-styled nudge. Runs from a periodic Celery task (see ai_engine.tasks).
 
-Hard limits:
+Hard limits (anti-spam, suena natural):
   - only sessions in 'considering' or 'checkout' with no confirmed order
   - respects sales_agent.followup_mode ('suave'/'activo', anything else = off)
-  - never exceeds sales_agent.max_followups per conversation
-  - minimum spacing between nudges, and never on conversations owned by a human
-  - deterministic copy (no LLM cost), passed through the brand guard
+  - máximo 1 nudge en 'suave', 2 en 'activo' (cap por modo, nunca se excede)
+  - se detiene si el cliente se despidió/rechazó ("deja así", "no gracias"...)
+  - copy corto, sin re-presentación, en la voz de la marca; brand guard aplicado
+  - spacing amplio entre nudges, y nunca en conversaciones que lleva un humano
 """
 from __future__ import annotations
 
@@ -31,8 +32,20 @@ class FollowUpEngine:
         'suave': 4,
         'activo': 2,
     }
-    MIN_SPACING_HOURS = 20   # between consecutive nudges in one conversation
+    # Anti-spam: cap de toques por modo. Un solo follow-up en 'suave'; a lo sumo
+    # dos en 'activo'. Nunca se excede aunque la config diga un número mayor.
+    MODE_MAX_FOLLOWUPS = {
+        'suave': 1,
+        'activo': 2,
+    }
+    MIN_SPACING_HOURS = 48   # el 2do nudge (solo 'activo') llega mucho después
     MAX_AGE_HOURS = 72       # older than this the lead is cold — leave it alone
+    # El cliente cerró la puerta → no insistir. OJO: "déjame pensarlo" NO va aquí;
+    # ese es justo el lead que el follow-up quiere recuperar.
+    _REFUSAL_PHRASES = (
+        'deja asi', 'dejalo asi', 'dejemoslo asi', 'no gracias', 'no por ahora',
+        'no me interesa', 'ya no', 'olvidalo', 'no quiero', 'no por el momento',
+    )
     ELIGIBLE_STAGES = ('considering', 'checkout')
     ELIGIBLE_CHANNELS = ('app', 'web', 'whatsapp')
     ELIGIBLE_CONVERSATION_STATES = ('nuevo', 'en_proceso')
@@ -136,11 +149,22 @@ class FollowUpEngine:
         if operator_state.get('owner') == 'humano':
             return False, 'human_owned'
 
+        # El cliente se despidió o rechazó explícitamente → no insistir.
+        recent_user_texts = list(
+            conversation.messages.filter(role='user').order_by('-timestamp')
+            .values_list('content', flat=True)[:6]
+        )
+        if cls._customer_disengaged(recent_user_texts):
+            return False, 'customer_disengaged'
+
         checkout_data = dict(session.checkout_data or {})
         if str(checkout_data.get('order_id') or '').strip():
             return False, 'order_already_placed'
 
-        max_followups = int(sales_agent.get('max_followups') or 3)
+        # Tope por modo (anti-spam): respeta la config pero nunca lo excede.
+        mode_cap = cls.MODE_MAX_FOLLOWUPS.get(mode, 1)
+        configured = int(sales_agent.get('max_followups') or mode_cap)
+        max_followups = min(configured, mode_cap)
         followup_state = dict(checkout_data.get('followup_state') or {})
         if int(followup_state.get('count') or 0) >= max_followups:
             return False, 'max_followups_reached'
@@ -180,41 +204,51 @@ class FollowUpEngine:
 
     @classmethod
     def _build_message(cls, *, session, organization, runtime_config: dict, followup_number: int) -> str:
-        sales_agent = (runtime_config or {}).get('sales_agent') or {}
-        agent_name = str(sales_agent.get('name') or '').strip()
-        product_title = cls._resolve_product_title(session, organization)
+        # Sin re-presentación (el cliente ya sabe quién eres): corto, natural y en
+        # la voz de la marca. El 2do intento (solo 'activo') es un cierre suave.
+        product = cls._clean_product_title(cls._resolve_product_title(session, organization))
+        casual = cls._is_casual_brand(runtime_config)
+        is_checkout = session.stage == 'checkout'
+        last_attempt = followup_number >= 2
 
-        if agent_name:
-            greeting = f'Hola, soy {agent_name} de {organization.name}.'
-        else:
-            greeting = f'Hola, te escribo de {organization.name}.'
+        ref_consid = f' en {product}' if product else ''
+        ref_order = f' de {product}' if product else ''
 
-        product_ref = f' con {product_title}' if product_title else ''
-
-        if followup_number >= 2:
-            # Last gentle attempt: leave the door open, zero pressure.
-            if session.stage == 'checkout':
-                body = (
-                    f'Tu pedido{product_ref} sigue guardado por si quieres retomarlo. '
-                    'Si prefieres dejarlo para otro momento, no hay problema; aqui estare.'
-                )
+        if casual:
+            if last_attempt:
+                message = 'Te lo dejo por acá por si acaso, cuando quieras retomamos'
+            elif is_checkout:
+                message = f'Holaa! te dejo el pedido{ref_order} listo cuando quieras, lo cerramos?'
             else:
-                body = (
-                    f'Quedo atento por si aun te interesa{product_ref or " lo que vimos"}. '
-                    'Si tienes alguna duda de precio, envio o disponibilidad, te la resuelvo aqui mismo.'
-                )
-        elif session.stage == 'checkout':
-            body = (
-                f'Dejamos tu pedido casi listo{product_ref}. '
-                '¿Quieres que lo terminemos? Solo nos falta confirmar tus datos y queda creado.'
-            )
+                message = f'Holaa! te quedó alguna duda{ref_consid}? por acá te ayudo'
+            emoji = cls._brand_emoji(runtime_config)
+            if emoji:
+                message = f'{message} {emoji}'
         else:
-            body = (
-                f'Quede pendiente de ti{product_ref}. '
-                '¿Te quedo alguna duda de precio, envio o disponibilidad? Te la resuelvo aqui mismo.'
-            )
+            if last_attempt:
+                message = 'Te lo dejo por aquí por si más adelante. Cuando quieras, retomamos.'
+            elif is_checkout:
+                message = f'Tu pedido{ref_order} quedó casi listo. ¿Lo terminamos?'
+            else:
+                message = f'Quedé pendiente contigo{ref_consid}. ¿Te ayudo con alguna duda?'
 
-        return f'{greeting} {body}'
+        return message
+
+    @staticmethod
+    def _is_casual_brand(runtime_config: dict) -> bool:
+        """Casual voice: the brand writes in bursts (measured) or is informal."""
+        card = BrandVoice.voice_card(runtime_config)
+        if str(card.get('message_rhythm') or '') == 'bursts':
+            return True
+        return bool(card) and not BrandVoice._is_formal_brand(runtime_config)
+
+    @staticmethod
+    def _brand_emoji(runtime_config: dict) -> str:
+        card = BrandVoice.voice_card(runtime_config)
+        if str(card.get('emoji_frequency') or '') == 'none':
+            return ''
+        palette = [str(e).strip() for e in (card.get('emoji_palette') or []) if str(e).strip()]
+        return palette[0] if palette else ''
 
     @staticmethod
     def _resolve_product_title(session, organization) -> str:
@@ -227,6 +261,32 @@ class FollowUpEngine:
             if product and str(product.get('title') or '').strip():
                 return str(product['title']).strip()
         return ''
+
+    @staticmethod
+    def _clean_product_title(title: str) -> str:
+        """Quita paréntesis del título para una referencia natural.
+
+        "Rosario Pulsera (En madera)" → "Rosario Pulsera".
+        """
+        import re
+        if not title:
+            return ''
+        return re.sub(r'\s*\([^)]*\)', '', str(title)).strip()
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        import unicodedata
+        norm = unicodedata.normalize('NFD', str(text or '').lower())
+        return ''.join(c for c in norm if unicodedata.category(c) != 'Mn')
+
+    @classmethod
+    def _customer_disengaged(cls, recent_texts) -> bool:
+        """True si el cliente se despidió o rechazó en sus últimos mensajes."""
+        for raw in recent_texts:
+            norm = cls._normalize(raw)
+            if any(phrase in norm for phrase in cls._REFUSAL_PHRASES):
+                return True
+        return False
 
     # ── Delivery ──────────────────────────────────────────────────────────────
 

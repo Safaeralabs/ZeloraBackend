@@ -69,6 +69,19 @@ def _mark_conversation_read(conversation):
     return inbox_state
 
 
+def _is_conversation_unread(conversation) -> bool:
+    """Mirrors ConversationListSerializer.get_unread — kept in sync manually
+    since inbox_state lives in a JSONField and can't be filtered in SQL."""
+    inbox_state = (conversation.metadata or {}).get('inbox_state') or {}
+    last_customer_message_at = inbox_state.get('last_customer_message_at')
+    last_read_at = inbox_state.get('last_read_at')
+    if not last_customer_message_at:
+        return False
+    if not last_read_at:
+        return True
+    return last_customer_message_at > last_read_at
+
+
 def _broadcast_public_appchat_message(conversation, message):
     if conversation.canal != 'app' or not conversation.external_id:
         return
@@ -110,13 +123,22 @@ class ConversationViewSet(OrgScopedMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def stats(self, request):
-        """Return conversation counts: total and current calendar month."""
+        """Return conversation counts: total, current calendar month, and
+        unread open conversations (for the inbox nav badge)."""
         now = timezone.now()
         start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         qs = self.get_queryset()
+        # Deliberately not built from get_queryset(): its select_related('contact',
+        # 'assigned_agent') conflicts with only('id', 'metadata') here — Django
+        # can't defer a field it's also been told to join via select_related.
+        open_qs = Conversation.objects.filter(
+            organization=self.request.user.organization
+        ).exclude(estado='resuelto').only('id', 'metadata')
+        unread_open_count = sum(1 for conv in open_qs if _is_conversation_unread(conv))
         return Response({
             'this_month': qs.filter(created_at__gte=start_of_month).count(),
             'total': qs.count(),
+            'unread_open_count': unread_open_count,
         })
 
     def retrieve(self, request, *args, **kwargs):

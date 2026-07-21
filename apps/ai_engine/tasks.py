@@ -398,6 +398,17 @@ def run_learning_engine(conversation_id: str) -> dict:
     if not messages:
         return {'status': 'skipped', 'reason': 'no_messages'}
 
+    # ── L0: Human corrections (deterministic, before any LLM/quality gate) ──────
+    # If a human agent rescued this conversation, their replies ARE the right
+    # answers to the questions the bot fumbled — capture them even when the
+    # conversation would be skipped by the L1 quality filter below.
+    human_corrections = 0
+    try:
+        from apps.ai_engine.sales.outcome_learning import OutcomeLearner
+        human_corrections = OutcomeLearner.learn_from_human_rescue(conversation)
+    except Exception as exc:
+        logger.warning('human_rescue_learning_failed', conversation_id=str(conversation_id), error=str(exc))
+
     # ── L1: Pre-filter low-quality conversations ────────────────────────────────
     should_learn, skip_reason = _should_learn_from(conversation, messages)
     if not should_learn:
@@ -409,7 +420,7 @@ def run_learning_engine(conversation_id: str) -> dict:
         except Exception:
             pass
         logger.info('learning_engine_skipped', conversation_id=str(conversation_id), reason=skip_reason)
-        return {'status': 'skipped', 'reason': skip_reason}
+        return {'status': 'skipped', 'reason': skip_reason, 'human_corrections': human_corrections}
 
     org_id_str = str(org.id)
     conversation_text = _build_conversation_summary(messages)
@@ -655,7 +666,7 @@ def run_learning_engine(conversation_id: str) -> dict:
     except Exception:
         pass
 
-    return {'status': 'ok', 'extracted': len(learnings), 'created': created, 'updated': updated, 'deduped': deduped, 'examples_created': examples_created}  # noqa: RET504
+    return {'status': 'ok', 'extracted': len(learnings), 'created': created, 'updated': updated, 'deduped': deduped, 'examples_created': examples_created, 'human_corrections': human_corrections}  # noqa: RET504
 
 
 def synthesize_playbook_from_kb(org_id: str) -> dict:
@@ -889,6 +900,50 @@ def sweep_inactive_conversations() -> dict:
     return {'status': 'ok', 'queued': queued}
 
 
+def refresh_brand_voices() -> dict:
+    """
+    Weekly continuous voice learning, per active org:
+
+      1. Recompile the brand voice_card from HUMAN inbox messages of the last
+         90 days (role='agent' — never the bot's own output), so the agent's
+         writing style tracks how the brand actually types today. Cards the
+         user edited by hand (source='manual') are never touched, and orgs
+         with too few human messages keep whatever card they have.
+      2. Decay the confidence of example-bank entries that never contributed
+         to an order, so fresh winners outrank stale imports over time.
+
+    Fully deterministic — no LLM cost.
+    """
+    from apps.accounts.models import Organization
+    from apps.ai_engine.sales.outcome_learning import OutcomeLearner
+    from apps.ai_engine.sales.voice_import import (
+        apply_voice_to_settings,
+        compile_voice_card_from_org_messages,
+    )
+
+    refreshed = 0
+    skipped = 0
+    for org in Organization.objects.filter(is_active=True):
+        try:
+            compiled = compile_voice_card_from_org_messages(org)
+            if not compiled['voice_card']:
+                skipped += 1
+                continue
+            if apply_voice_to_settings(
+                org, compiled['voice_card'], compiled['voice_examples'], source='learned',
+            ):
+                refreshed += 1
+            else:
+                skipped += 1
+        except Exception as exc:
+            skipped += 1
+            logger.warning('voice_refresh_failed', org_id=str(org.id), error=str(exc))
+
+    decayed = OutcomeLearner.decay_stale_examples()
+    logger.info('voice_refresh_done', refreshed=refreshed, skipped=skipped, decayed=decayed)
+    return {'status': 'ok', 'refreshed': refreshed, 'skipped': skipped, 'decayed': decayed}
+
+
 # ── Celery tasks ─────────────────────────────────────────────────────────────
 
 try:
@@ -1009,6 +1064,16 @@ try:
         from apps.ai_engine.sales.followup import FollowUpEngine
         return FollowUpEngine.sweep()
 
+    @celery_app.task(
+        name='ai_engine.tasks.refresh_brand_voices',
+        ignore_result=True,
+        queue='ai',
+    )
+    def refresh_brand_voices_task() -> dict:
+        """Weekly periodic task — recompile brand voice cards from real human
+        messages and decay stale example-bank entries."""
+        return refresh_brand_voices()
+
 except ImportError:
     def extract_conversation_learnings(conversation_id: str) -> dict:  # type: ignore[misc]
         return run_learning_engine(conversation_id)
@@ -1028,3 +1093,6 @@ except ImportError:
     def sales_followup_sweep_task() -> dict:  # type: ignore[misc]
         from apps.ai_engine.sales.followup import FollowUpEngine
         return FollowUpEngine.sweep()
+
+    def refresh_brand_voices_task() -> dict:  # type: ignore[misc]
+        return refresh_brand_voices()

@@ -86,6 +86,7 @@ def _v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
             'avoid_phrases': brand_cfg.get('avoid_phrases') or [],
             'customer_style_notes': brand_cfg.get('customer_style_notes') or '',
             'voice_examples': _coerce_str_list(brand_cfg.get('voice_examples')),
+            'voice_card': brand_cfg.get('voice_card') or {},
         },
     }
 
@@ -214,6 +215,25 @@ _BRAND_DEFAULTS: dict[str, Any] = {
     'avoid_phrases': [],
     'customer_style_notes': '',
     'voice_examples': [],
+    'voice_card': {},
+}
+
+#: Measurable writing-style fingerprint of the brand (how it *types*, not what
+#: it says). Compiled automatically from real brand chats (see
+#: apps.ai_engine.sales.voice_import) or edited by hand. All fields optional;
+#: empty means "no constraint".
+_VOICE_CARD_DEFAULTS: dict[str, Any] = {
+    'message_rhythm': '',           # 'bursts' (several short messages per turn) | 'single'
+    'max_burst_messages': 3,        # cap of messages per turn when rhythm is 'bursts'
+    'typical_message_words': 0,     # median words per message (0 = unknown)
+    'price_style': '',              # e.g. '35mil, nunca "$35.000"'
+    'emoji_palette': [],            # ONLY emojis the brand actually uses
+    'emoji_frequency': '',          # 'none' | 'low' | 'medium' | 'high'
+    'punctuation_style': '',        # e.g. 'espacio antes del "?", sin punto final'
+    'signature_phrases': [],        # e.g. ['dale', 'listo', 'porfa']
+    'greeting_style': '',           # e.g. 'Holaa, como vas?'
+    'formatting_rules': [],         # e.g. ['nunca listas ni negritas']
+    'source': '',                   # 'imported' | 'manual'
 }
 
 _GENERAL_AGENT_DEFAULTS: dict[str, Any] = {
@@ -302,6 +322,20 @@ _AI_PLATFORM_DEFAULTS: dict[str, Any] = {
 def _fill_defaults(s: dict[str, Any]) -> dict[str, Any]:
     op = {**_ORG_PROFILE_DEFAULTS, **(s.get('org_profile') or {})}
     op['brand'] = {**_BRAND_DEFAULTS, **(op.get('brand') or {})}
+    raw_voice_card = op['brand'].get('voice_card')
+    op['brand']['voice_card'] = {
+        **_VOICE_CARD_DEFAULTS,
+        **(raw_voice_card if isinstance(raw_voice_card, dict) else {}),
+    }
+    for key in ('emoji_palette', 'signature_phrases', 'formatting_rules'):
+        if not isinstance(op['brand']['voice_card'].get(key), list):
+            op['brand']['voice_card'][key] = []
+    try:
+        op['brand']['voice_card']['max_burst_messages'] = max(
+            1, min(4, int(op['brand']['voice_card'].get('max_burst_messages') or 3))
+        )
+    except (TypeError, ValueError):
+        op['brand']['voice_card']['max_burst_messages'] = 3
 
     ga = {**_GENERAL_AGENT_DEFAULTS, **(s.get('general_agent') or {})}
     for key in ('allowed_topics', 'blocked_topics', 'handoff_to_sales_when', 'handoff_to_human_when'):

@@ -72,7 +72,10 @@ class FollowUpEngineTests(TestCase):
         followup = session.conversation.messages.order_by('-timestamp').first()
         self.assertEqual(followup.role, 'bot')
         self.assertEqual(followup.metadata['followup']['number'], 1)
-        self.assertIn('Lia', followup.content)
+        # Sin re-presentación: ya no dice "soy Lia de ..." ni el nombre de la marca.
+        self.assertNotIn('lia', followup.content.lower())
+        self.assertNotIn(self.org.name.lower(), followup.content.lower())
+        self.assertLess(len(followup.content), 120)
         session.refresh_from_db()
         self.assertEqual(session.checkout_data['followup_state']['count'], 1)
 
@@ -142,22 +145,83 @@ class FollowUpEngineTests(TestCase):
         self.assertFalse(FollowUpEngine.process_session(session, config, now=self.now))
 
     def test_second_followup_is_softer_and_final(self):
+        # El 2do nudge solo existe en modo 'activo' (suave = 1). Espaciado 48h.
+        activo = {'sales_agent': {'enabled': True, 'name': 'Lia', 'followup_mode': 'activo', 'max_followups': 2},
+                  'org_profile': {'brand': {'avoid_phrases': []}}}
         session = self._make_session(
-            hours_quiet=30,
+            hours_quiet=52,
             checkout_data={'followup_state': {
                 'count': 1,
-                'last_at': (self.now - timedelta(hours=25)).isoformat(),
+                'last_at': (self.now - timedelta(hours=50)).isoformat(),
             }},
         )
-        sent = FollowUpEngine.process_session(session, RUNTIME_CONFIG, now=self.now)
+        sent = FollowUpEngine.process_session(session, activo, now=self.now)
         self.assertTrue(sent)
         followup = session.conversation.messages.order_by('-timestamp').first()
         self.assertEqual(followup.metadata['followup']['number'], 2)
         session.refresh_from_db()
         self.assertEqual(session.checkout_data['followup_state']['count'], 2)
-        # Third attempt blocked by max_followups=2
-        future = self.now + timedelta(hours=25)
-        self.assertFalse(FollowUpEngine.process_session(session, RUNTIME_CONFIG, now=future))
+        # Third attempt blocked by max_followups (activo cap = 2)
+        future = self.now + timedelta(hours=52)
+        self.assertFalse(FollowUpEngine.process_session(session, activo, now=future))
+
+    # ── Anti-spam / natural ───────────────────────────────────────────────────
+
+    def test_suave_mode_caps_at_one_followup(self):
+        cfg = {'sales_agent': {'enabled': True, 'followup_mode': 'suave', 'max_followups': 5},
+               'org_profile': {'brand': {'avoid_phrases': []}}}
+        session = self._make_session(
+            hours_quiet=6,
+            checkout_data={'followup_state': {
+                'count': 1,
+                'last_at': (self.now - timedelta(hours=60)).isoformat(),  # espaciado OK
+            }},
+        )
+        # Aunque max_followups=5, 'suave' topa en 1 → bloqueado.
+        self.assertFalse(FollowUpEngine.process_session(session, cfg, now=self.now))
+
+    def test_customer_disengaged_blocks_followup(self):
+        conv = Conversation.objects.create(organization=self.org, canal='app', estado='en_proceso', metadata={})
+        Message.objects.create(conversation=conv, role='user', content='Deja así gracias')
+        Message.objects.create(conversation=conv, role='bot', content='De acuerdo')
+        last = self.now - timedelta(hours=6)
+        Conversation.objects.filter(id=conv.id).update(last_message_at=last)
+        conv.refresh_from_db()
+        session = SalesSession.objects.create(
+            conversation=conv, organization=self.org, stage='considering', checkout_data={})
+        SalesSession.objects.filter(id=session.id).update(updated_at=last)
+        session.refresh_from_db()
+        self.assertFalse(FollowUpEngine.process_session(session, RUNTIME_CONFIG, now=self.now))
+
+    def test_pensarlo_still_gets_followup(self):
+        # "déjame pensarlo" NO es un rechazo: es justo el lead a recuperar.
+        conv = Conversation.objects.create(organization=self.org, canal='app', estado='en_proceso', metadata={})
+        Message.objects.create(conversation=conv, role='user', content='déjame pensarlo y te aviso')
+        Message.objects.create(conversation=conv, role='bot', content='claro, aquí estoy')
+        last = self.now - timedelta(hours=6)
+        Conversation.objects.filter(id=conv.id).update(last_message_at=last)
+        conv.refresh_from_db()
+        session = SalesSession.objects.create(
+            conversation=conv, organization=self.org, stage='considering', checkout_data={})
+        SalesSession.objects.filter(id=session.id).update(updated_at=last)
+        session.refresh_from_db()
+        self.assertTrue(FollowUpEngine.process_session(session, RUNTIME_CONFIG, now=self.now))
+
+    def test_no_self_intro_and_clean_product_title(self):
+        product = self._create_product(title='Rosario Pulsera (En madera)')
+        session = self._make_session(stage='considering', hours_quiet=6)
+        session.selected_products = [str(product.id)]
+        session.save(update_fields=['selected_products'])
+        FollowUpEngine.process_session(session, RUNTIME_CONFIG, now=self.now)
+        content = session.conversation.messages.order_by('-timestamp').first().content
+        self.assertNotIn('soy ', content.lower())
+        self.assertNotIn('(en madera)', content.lower())
+        self.assertIn('Rosario Pulsera', content)
+
+    def test_clean_product_title_helper(self):
+        self.assertEqual(
+            FollowUpEngine._clean_product_title('Rosario Pulsera (En madera)'), 'Rosario Pulsera')
+        self.assertEqual(FollowUpEngine._clean_product_title(''), '')
 
     def test_brand_guard_strips_forbidden_phrases_from_followup(self):
         config = {

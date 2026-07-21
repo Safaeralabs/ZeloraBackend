@@ -122,6 +122,109 @@ class BrandVoice:
         return lines
 
     @staticmethod
+    def voice_card(runtime_config: dict) -> dict:
+        """The brand's measurable writing-style fingerprint (may be empty)."""
+        brand = ((runtime_config or {}).get('org_profile') or {}).get('brand') or {}
+        card = brand.get('voice_card')
+        return card if isinstance(card, dict) else {}
+
+    @staticmethod
+    def burst_config(runtime_config: dict) -> dict:
+        """Whether replies should be split into several short chat messages."""
+        card = BrandVoice.voice_card(runtime_config)
+        enabled = str(card.get('message_rhythm') or '').strip().lower() == 'bursts'
+        try:
+            max_messages = max(1, min(4, int(card.get('max_burst_messages') or 3)))
+        except (TypeError, ValueError):
+            max_messages = 3
+        return {'enabled': enabled, 'max_messages': max_messages}
+
+    #: Separator the LLM uses between chat bubbles when the brand writes in
+    #: bursts. Chosen because it never appears in natural sales Spanish.
+    BURST_SEPARATOR = '|||'
+
+    @staticmethod
+    def voice_card_lines(runtime_config: dict) -> list[str]:
+        """'## Micro-estilo de escritura' — hard FORM rules measured from the
+        brand's real chats (message length, price format, emoji palette,
+        punctuation quirks). These beat any generic style default below."""
+        card = BrandVoice.voice_card(runtime_config)
+        if not card:
+            return []
+
+        lines: list[str] = []
+        typical_words = 0
+        try:
+            typical_words = int(card.get('typical_message_words') or 0)
+        except (TypeError, ValueError):
+            typical_words = 0
+        if typical_words:
+            lines.append(
+                f'- Mensajes CORTOS: la marca escribe mensajes de ~{typical_words} palabras. '
+                'No escribas parrafos largos ni oraciones compuestas encadenadas.'
+            )
+        if card.get('price_style'):
+            lines.append(f'- Formato de precios (respetalo SIEMPRE): {card["price_style"]}')
+        palette = [str(e).strip() for e in (card.get('emoji_palette') or []) if str(e).strip()]
+        frequency = str(card.get('emoji_frequency') or '').strip().lower()
+        if frequency == 'none':
+            lines.append('- NO uses emojis: la marca no los usa.')
+        elif palette:
+            frequency_note = {
+                'low': 'La mayoria de mensajes NO llevan emoji; usa maximo uno y solo a veces.',
+                'medium': 'Usa maximo un emoji por mensaje.',
+                'high': 'Puedes usar emojis con frecuencia, sin saturar.',
+            }.get(frequency, 'Usalos con moderacion, maximo uno por mensaje.')
+            lines.append(
+                f'- Emojis permitidos UNICAMENTE estos: {" ".join(palette[:6])}. {frequency_note} '
+                'Nunca uses otros emojis.'
+            )
+        if card.get('punctuation_style'):
+            lines.append(f'- Puntuacion propia de la marca: {card["punctuation_style"]}')
+        phrases = [str(p).strip() for p in (card.get('signature_phrases') or []) if str(p).strip()]
+        if phrases:
+            lines.append(
+                'Muletillas propias de la marca (usalas donde suenen naturales): '
+                + ', '.join(phrases[:8])
+            )
+        if card.get('greeting_style'):
+            lines.append(f'- Asi saluda la marca: {card["greeting_style"]}')
+        for rule in (card.get('formatting_rules') or [])[:5]:
+            rule_text = str(rule).strip()
+            if rule_text:
+                lines.append(f'- {rule_text}')
+
+        if not lines:
+            return []
+        return [
+            '## Micro-estilo de escritura (reglas de FORMA medidas de los chats reales de la marca)',
+            'Estas reglas mandan sobre cualquier estilo generico:',
+            *lines,
+            '',
+        ]
+
+    @staticmethod
+    def burst_protocol_lines(runtime_config: dict) -> list[str]:
+        """Instruct the LLM to write like a person chatting: several short
+        messages per turn, separated by BURST_SEPARATOR. The executor splits
+        them into real chat bubbles."""
+        burst = BrandVoice.burst_config(runtime_config)
+        if not burst['enabled']:
+            return []
+        sep = BrandVoice.BURST_SEPARATOR
+        return [
+            '## Formato de salida: mensajes de chat (OBLIGATORIO)',
+            'Esta marca NO escribe parrafos: escribe varios mensajes cortos seguidos, como una persona por chat.',
+            f'Escribe tu respuesta como 1 a {burst["max_messages"]} mensajes cortos separados EXACTAMENTE por "{sep}".',
+            f'Ejemplo de formato: "Hola{sep}Claro, tenemos disponible{sep}Que color te gustaria ?"',
+            '- Cada mensaje: una sola idea, corto.',
+            '- NO numeres los mensajes, NO uses listas ni negritas.',
+            f'- Si la respuesta es corta (un dato puntual), un solo mensaje sin "{sep}".',
+            '- Maximo UNA pregunta en total, siempre en el ultimo mensaje.',
+            '',
+        ]
+
+    @staticmethod
     def conversational_style_lines(runtime_config: dict) -> list[str]:
         """'## Estilo conversacional humano' — anti-robotic style guidance.
 
@@ -176,7 +279,10 @@ class BrandVoice:
             '## Como vendes (compórtate como un vendedor real)',
             '- Eres un vendedor experto de la marca, no un asistente informativo: tu objetivo en cada turno es avanzar la venta un paso.',
             '- Termina tus mensajes con una micro-accion concreta (una pregunta de cierre, una propuesta o el siguiente paso), salvo que el cliente solo pida un dato puntual.',
-            '- Ante una objecion no te rindas al primer "no": respondela con un beneficio concreto y reencuadra el valor. Maximo UNA insistencia suave; si el cliente mantiene el no, respetalo.',
+            '- PROHIBIDO cerrar con disponibilidad pasiva: "avisame si necesitas algo", "estoy aqui para ayudarte", "no dudes en preguntar", "quedo atento", "solo dimelo" y variantes. Un vendedor no espera: PROPONE. Reemplaza siempre esa muletilla por el siguiente paso ("te lo dejo pedido ?", "quieres que te muestre X ?", "lo confirmamos ?").',
+            '- Si el cliente muestra interes ("si", "me gusta", "y ahora ?"), NO lo dejes en el aire: propone crear el pedido de una vez y pide el dato que falte.',
+            '- NUNCA digas que hiciste algo que no puedes hacer (agregar a lista de deseos, apartar el producto, enviar catalogo por correo, avisar por otro canal). Tus unicas acciones reales son mostrar productos de este prompt y crear el pedido aqui en el chat.',
+            '- Ante una objecion no te rindas al primer "no": respondela con un beneficio concreto y reencuadra el valor. Si hay promocion o facilidad de pago disponible en este prompt, usala. Maximo UNA insistencia suave; si el cliente mantiene el no, respetalo.',
             '- Escucha antes de vender: usa lo que el cliente ya dijo (presupuesto, uso, gustos) en tu propuesta, como haria un buen vendedor de mostrador.',
         ]
 
@@ -241,11 +347,11 @@ class BrandVoice:
 
         base = {
             'discover': 'Muestra 1-2 productos disponibles del catalogo. Si el cliente dio preferencias, muestra los que mas encajan.',
-            'recommend': 'Recomienda 1-2 productos SOLO del listado de productos disponibles. Si la busqueda es ambigua, pide confirmacion en vez de asumir.',
-            'close': 'Enfocate en cerrar la venta. Pregunta si quiere proceder.',
-            'inform': 'Da la informacion solicitada de forma clara y concisa.',
+            'recommend': 'Recomienda 1-2 productos SOLO del listado de productos disponibles. Si la busqueda es ambigua, pide confirmacion en vez de asumir. Remata proponiendo el siguiente paso, no ofreciendo "mas informacion".',
+            'close': 'Este es el momento de CERRAR: propone crear el pedido ya ("te lo dejo pedido ?", "lo confirmamos ?"). Si el cliente objeta (precio, dudas), reencuadra el valor con un beneficio concreto o una promocion/facilidad de este prompt y vuelve a proponer el cierre.',
+            'inform': 'Da la informacion solicitada de forma clara y concisa, y remata con una micro-pregunta que acerque la venta (nunca con "algo mas?" ni "aqui estoy").',
             'clarify': 'Haz UNA sola pregunta para entender mejor que necesita.',
-            'redirect': 'En una oracion, explica que solo puedes ayudar con los productos de la tienda.',
+            'redirect': 'En una oracion, explica que solo puedes ayudar con los productos de la tienda y ofrece mostrarselos.',
         }
         style_for_strategy = {
             'discover': playbook.get('opening_style'),

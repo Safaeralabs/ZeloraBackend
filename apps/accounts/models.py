@@ -54,6 +54,45 @@ class Organization(models.Model):
     def active_agent_count(self):
         return self.users.filter(is_active=True).count()
 
+    @property
+    def active_subscription(self):
+        """
+        Suscripción vigente (fuente de verdad del billing). Los campos legacy
+        `plan` / `max_agents` / `monthly_message_limit` quedan como respaldo hasta
+        migrar a todos los consumidores a la suscripción.
+        """
+        return (
+            self.subscriptions
+            .filter(status__in=['trialing', 'active', 'past_due'])
+            .select_related('plan')
+            .order_by('-started_at')
+            .first()
+        )
+
+    @property
+    def current_plan(self):
+        """El Plan comercial vigente vía la suscripción, o None si aún no tiene."""
+        sub = self.active_subscription
+        return sub.plan if sub else None
+
+    @property
+    def agent_limit(self):
+        """Máximo de asientos del plan vigente (fallback al campo legacy)."""
+        plan = self.current_plan
+        return plan.max_agents if plan else self.max_agents
+
+    @property
+    def product_limit(self):
+        """Máximo de productos del plan vigente (0 = ilimitado; fallback: ilimitado)."""
+        plan = self.current_plan
+        return plan.max_products if plan else 0
+
+    @property
+    def channel_limit(self):
+        """Máximo de canales del plan vigente (fallback: 1)."""
+        plan = self.current_plan
+        return plan.max_channels if plan else 1
+
 
 # ─── User (Agent) ──────────────────────────────────────────────────────────────
 

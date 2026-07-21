@@ -41,6 +41,13 @@ GOLDEN_BRAND_SETTINGS = {
             'preferred_closing_style': 'cierre suave sin presion',
         },
     },
+    'payment_settings': {
+        'nequi_enabled': True,
+        'nequi_number': '3001234567',
+        'nequi_holder': 'Lia SAS',
+        'cash_enabled': True,
+        'cash_instructions': 'Pagas en efectivo contra entrega.',
+    },
     'sales_agent': {
         'enabled': True,
         'name': 'Lia',

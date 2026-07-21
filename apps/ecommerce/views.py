@@ -1,6 +1,7 @@
 import os
 import uuid
 
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -17,7 +18,8 @@ from .serializers import (
     PromotionSerializer,
     ProductRelationSerializer,
 )
-from .upload_security import validate_product_image_upload
+from .upload_security import validate_product_image_upload, normalize_product_photo_for_analysis
+from .photo_analysis import ProductPhotoAnalyzer
 from core.permissions import IsOrganizationMember
 from core.mixins import OrgScopedMixin
 
@@ -45,7 +47,14 @@ class ProductViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         ).prefetch_related('variants')
 
     def perform_create(self, serializer):
-        product = serializer.save(organization=self.request.user.organization)
+        org = self.request.user.organization
+        limit = org.product_limit  # 0 = ilimitado
+        if limit and Product.objects.filter(organization=org).count() >= limit:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                f'Llegaste al límite de productos de tu plan ({limit}). Sube de plan para agregar más.'
+            )
+        product = serializer.save(organization=org)
         self._refresh_embedding(product)
 
     def perform_update(self, serializer):
@@ -89,6 +98,53 @@ class ProductViewSet(OrgScopedMixin, viewsets.ModelViewSet):
                 'content_type': uploaded_file.content_type,
             },
             status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=['post'], url_path='analyze-photo', parser_classes=[MultiPartParser, FormParser])
+    def analyze_photo(self, request):
+        """
+        Photo -> draft catalog fields. Never creates a Product — the client
+        shows the suggestion for the merchant to edit, then calls the normal
+        create endpoint with status='draft' once they confirm.
+        """
+        uploaded_file = request.FILES.get('file')
+        cleaned_bytes = normalize_product_photo_for_analysis(uploaded_file)
+
+        organization_id = str(request.user.organization_id)
+        filename = f'{uuid.uuid4().hex}.jpg'
+        storage_path = f'products/{organization_id}/{filename}'
+        stored_path = default_storage.save(storage_path, ContentFile(cleaned_bytes))
+        public_url = request.build_absolute_uri(default_storage.url(stored_path))
+
+        result = ProductPhotoAnalyzer.analyze(cleaned_bytes, request.user.organization)
+
+        if not result['ok']:
+            default_storage.delete(stored_path)
+            reason_messages = {
+                'no_product': 'No reconocimos un producto vendible en esta foto. Intenta con otra toma.',
+                'inappropriate': 'Esta foto no se puede usar para un producto.',
+                'unclear': 'La foto no es lo bastante clara. Intenta con mejor luz o encuadre.',
+                'unavailable': 'El analisis por foto no esta disponible en este momento. Puedes cargar el producto a mano.',
+            }
+            return Response(
+                {
+                    'ok': False,
+                    'message': reason_messages.get(result['rejection_reason'], reason_messages['unclear']),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(
+            {
+                'ok': True,
+                'image_url': public_url,
+                'category': result['category'],
+                'title': result['suggested_title'],
+                'description': result['description'],
+                'attributes': result['attributes'],
+                'confidence': result['confidence'],
+            },
+            status=status.HTTP_200_OK,
         )
 
     @action(
@@ -329,4 +385,42 @@ class ProductRelationViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
-        serializer.save(organization=self.request.user.organization)
+        relation = serializer.save(organization=self.request.user.organization)
+        self._sync_inverse(relation, create=True)
+
+    def perform_update(self, serializer):
+        # Capture the pre-edit relation so a changed type retires the stale
+        # inverse before the new one is created.
+        old = ProductRelation.objects.get(pk=serializer.instance.pk)
+        old_type = old.relation_type
+        relation = serializer.save()
+        if old_type != relation.relation_type:
+            self._sync_inverse(old, create=False)
+        self._sync_inverse(relation, create=True)
+
+    def perform_destroy(self, instance):
+        self._sync_inverse(instance, create=False)
+        instance.delete()
+
+    @staticmethod
+    def _sync_inverse(relation, *, create):
+        """Keep the reverse relation on the target product in sync so the graph
+        is bidirectional without the merchant configuring both directions."""
+        inverse_type = ProductRelation.INVERSE_RELATION_TYPE.get(relation.relation_type)
+        if not inverse_type:
+            return
+        # A self-relation would collapse into the same row — skip.
+        if relation.source_product_id == relation.target_product_id:
+            return
+        lookup = {
+            'organization': relation.organization,
+            'source_product': relation.target_product,
+            'target_product': relation.source_product,
+            'relation_type': inverse_type,
+        }
+        if create:
+            ProductRelation.objects.get_or_create(
+                defaults={'weight': relation.weight}, **lookup
+            )
+        else:
+            ProductRelation.objects.filter(**lookup).delete()

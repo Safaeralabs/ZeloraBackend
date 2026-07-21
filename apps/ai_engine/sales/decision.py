@@ -82,10 +82,14 @@ class DecisionEngine:
             'response_strategy': 'recommend',
         },
         ('price_sensitive_customer', 'considering'): {
+            # "Es que esta caro" with a product already on the table is a price
+            # objection at the closing moment, not a browsing signal: rebut with
+            # value/promo and push toward close (same reasoning as
+            # objection_customer/considering below).
             'fetch_products': True,
             'fetch_kb': ['sales_scripts'],
             'fetch_promotions': True,
-            'response_strategy': 'recommend',
+            'response_strategy': 'close',
         },
         ('price_sensitive_customer', 'checkout'): {
             'fetch_products': True,

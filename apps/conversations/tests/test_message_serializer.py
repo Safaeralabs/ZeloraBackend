@@ -117,3 +117,54 @@ class MessageSerializerTests(TestCase):
         self.assertEqual(payload['ui_payload']['cart_items'][0]['title'], 'Top Motion')
         self.assertEqual(payload['ui_payload']['required_fields'], ['full_name'])
         self.assertEqual(payload['ui_payload']['payment_options'][0]['id'], 'nequi')
+        # Defaults to False when the backend did not mark the confirm turn.
+        self.assertFalse(payload['ui_payload']['awaiting_confirmation'])
+
+    def test_checkout_compact_exposes_awaiting_confirmation_flag(self):
+        organization = Organization.objects.create(name='Confirm Org', slug='test-org-confirm')
+        conversation = Conversation.objects.create(organization=organization, canal='app', estado='nuevo')
+        message = Message.objects.create(
+            conversation=conversation,
+            role='bot',
+            content='Antes de crear tu pedido te resumo...',
+            metadata={
+                'ui_payload': {
+                    'type': 'checkout_compact',
+                    'title': 'Confirma tu pedido',
+                    'cart_items': [{'product_id': 'p1', 'title': 'Top Motion', 'qty': 1, 'unit_price': 1000, 'subtotal': 1000}],
+                    'fields': [{'key': 'full_name', 'label': 'Nombre', 'required': True}],
+                    'required_fields': ['full_name'],
+                    'awaiting_confirmation': True,
+                },
+            },
+        )
+
+        payload = MessageSerializer(message).data
+        self.assertTrue(payload['ui_payload']['awaiting_confirmation'])
+
+    def test_exposes_order_created_ui_payload(self):
+        organization = Organization.objects.create(name='Created Org', slug='test-org-created')
+        conversation = Conversation.objects.create(organization=organization, canal='app', estado='nuevo')
+        message = Message.objects.create(
+            conversation=conversation,
+            role='bot',
+            content='Listo, ya generamos tu orden.',
+            metadata={'ui_payload': {'type': 'order_created', 'order_number': '3F2A9C'}},
+        )
+
+        payload = MessageSerializer(message).data
+        self.assertEqual(payload['ui_payload']['type'], 'order_created')
+        self.assertEqual(payload['ui_payload']['order_number'], '3F2A9C')
+
+    def test_strips_unknown_ui_payload_type(self):
+        organization = Organization.objects.create(name='Unknown Org', slug='test-org-unknown')
+        conversation = Conversation.objects.create(organization=organization, canal='app', estado='nuevo')
+        message = Message.objects.create(
+            conversation=conversation,
+            role='bot',
+            content='hola',
+            metadata={'ui_payload': {'type': 'exec_shell', 'cmd': 'rm -rf /'}},
+        )
+
+        payload = MessageSerializer(message).data
+        self.assertIsNone(payload['ui_payload'])

@@ -56,7 +56,9 @@ class ExecuteDecisionFollowupWiringTests(SimpleTestCase):
         executor = MagicMock()
         executor.execute.return_value = 'Listo, tu pedido fue creado.'
         executor.get_message_metadata.return_value = {'ui_payload': {'kind': 'order_confirmed'}}
-        executor.get_followup_message.return_value = 'Te escribo apenas este listo.'
+        executor.get_followup_messages.return_value = [
+            {'text': 'Te escribo apenas este listo.', 'kind': 'order_followup'},
+        ]
         mock_executor_cls.return_value = executor
 
         decision = MagicMock()
@@ -73,6 +75,32 @@ class ExecuteDecisionFollowupWiringTests(SimpleTestCase):
         self.assertIn('bot_followup_message', action_types)
         followup_action = next(pa for pa in decision.post_actions if pa['action_type'] == 'bot_followup_message')
         self.assertEqual(followup_action['payload']['text'], 'Te escribo apenas este listo.')
+        self.assertEqual(followup_action['payload']['kind'], 'order_followup')
+
+    @patch('apps.ai_router.handler._sales_agent_enabled', return_value=True)
+    @patch('apps.ai_router.handler.SalesAgentExecutor')
+    def test_burst_parts_become_ordered_post_actions(self, mock_executor_cls, _mock_enabled):
+        executor = MagicMock()
+        executor.execute.return_value = 'Hola'
+        executor.get_message_metadata.return_value = {}
+        executor.get_followup_messages.return_value = [
+            {'text': '35mil', 'kind': 'burst'},
+            {'text': 'Que color te gustaria ?', 'kind': 'burst'},
+        ]
+        mock_executor_cls.return_value = executor
+
+        decision = MagicMock()
+        decision.route = RouteType.ROUTE_TO_SALES_AGENT
+        decision.post_actions = []
+
+        reply = _execute_decision(
+            decision=decision, conversation=MagicMock(canal='app'), message=MagicMock(), organization=MagicMock(),
+        )
+
+        self.assertEqual(reply, 'Hola')
+        followup_actions = [pa for pa in decision.post_actions if pa['action_type'] == 'bot_followup_message']
+        self.assertEqual([pa['payload']['text'] for pa in followup_actions], ['35mil', 'Que color te gustaria ?'])
+        self.assertTrue(all(pa['payload']['kind'] == 'burst' for pa in followup_actions))
 
     @patch('apps.ai_router.handler._sales_agent_enabled', return_value=True)
     @patch('apps.ai_router.handler.SalesAgentExecutor')
@@ -80,7 +108,7 @@ class ExecuteDecisionFollowupWiringTests(SimpleTestCase):
         executor = MagicMock()
         executor.execute.return_value = 'Tenemos varias opciones disponibles.'
         executor.get_message_metadata.return_value = {}
-        executor.get_followup_message.return_value = None
+        executor.get_followup_messages.return_value = []
         mock_executor_cls.return_value = executor
 
         decision = MagicMock()

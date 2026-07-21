@@ -10,6 +10,7 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -544,6 +545,14 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
             metadata={'source': source},
         )
 
+    # Billing: cuenta la conversación del ciclo (dedup por hilo, activa el PAYG).
+    # Nunca bloquea el chat si algo falla.
+    try:
+        from apps.billing.services import record_conversation_usage
+        record_conversation_usage(organization, conversation)
+    except Exception:
+        pass
+
     # Run AI Router pipeline
     try:
         from apps.ai_router.handler import handle_inbound_message
@@ -567,7 +576,7 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
     # (This happens even if being escalated - we want to show the "escalating..." message)
     bot_message = None
     bot_metadata = {'source': source, 'intent': intent, 'generated_by': 'ai_router'}
-    followup_text = ''
+    pending_followups: list[dict] = []
     if decision:
         for post_action in decision.post_actions or []:
             if post_action.get('action_type') == 'bot_message_metadata':
@@ -576,8 +585,11 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
                     bot_metadata.update(payload)
             elif post_action.get('action_type') == 'bot_followup_message':
                 payload = post_action.get('payload') or {}
-                if isinstance(payload, dict):
-                    followup_text = str(payload.get('text') or '').strip()
+                if isinstance(payload, dict) and str(payload.get('text') or '').strip():
+                    pending_followups.append({
+                        'text': str(payload.get('text') or '').strip(),
+                        'kind': str(payload.get('kind') or 'order_followup'),
+                    })
     if bot_reply_text:
         bot_message = Message.objects.create(
             conversation=conversation,
@@ -586,17 +598,18 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
             metadata=bot_metadata,
         )
 
-    # Proactive follow-up (e.g. "what happens next" right after an order is
-    # confirmed) sent as a second bubble in the same turn, without waiting
-    # for the customer to ask. Only fires alongside a real bot reply.
-    followup_message = None
-    if bot_message and followup_text:
-        followup_message = Message.objects.create(
-            conversation=conversation,
-            role='bot',
-            content=followup_text,
-            metadata={'source': source, 'intent': intent, 'generated_by': 'ai_router', 'kind': 'order_followup'},
-        )
+    # Extra bot bubbles in the same turn: burst parts (brands that write in
+    # several short messages) and/or the proactive post-order "what happens
+    # next" followup. Only fire alongside a real bot reply, in order.
+    followup_messages: list = []
+    if bot_message:
+        for followup in pending_followups:
+            followup_messages.append(Message.objects.create(
+                conversation=conversation,
+                role='bot',
+                content=followup['text'],
+                metadata={'source': source, 'intent': intent, 'generated_by': 'ai_router', 'kind': followup['kind']},
+            ))
 
     # Reload conversation from DB to get any metadata changes from escalation
     conversation.refresh_from_db()
@@ -642,7 +655,7 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
                     'conversation': conversation_payload,
                 },
             )
-        if followup_message:
+        for followup_message in followup_messages:
             async_to_sync(channel_layer.group_send)(
                 f'org_{conversation.organization_id}',
                 {
@@ -676,7 +689,7 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
     _broadcast_public_appchat_message(conversation, user_message)
     if bot_message:
         _broadcast_public_appchat_message(conversation, bot_message)
-    if followup_message:
+    for followup_message in followup_messages:
         _broadcast_public_appchat_message(conversation, followup_message)
 
     # Broadcast system messages to appchat
@@ -691,7 +704,7 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
 
     if bot_message:
         _broadcast_public_webchat_message(conversation, bot_message)
-    if followup_message:
+    for followup_message in followup_messages:
         _broadcast_public_webchat_message(conversation, followup_message)
     # Build messages array: always include user message, bot message only if created
     messages_list = [
@@ -710,7 +723,7 @@ def create_inbound_conversation(*, data: dict, channel: str, source: str):
             'timestamp': bot_message.timestamp.isoformat(),
             'ui_payload': serialize_message_ui_payload(bot_message.metadata),
         })
-    if followup_message:
+    for followup_message in followup_messages:
         messages_list.append({
             'id': str(followup_message.id),
             'role': followup_message.role,
@@ -771,6 +784,57 @@ def get_public_conversation_payload(*, org_slug: str | None, session_id: str, ch
             for message in conversation.messages.order_by('timestamp')
         ],
     }
+
+
+def _has_active_payment_method(organization) -> bool:
+    """True if the org has at least one fully-configured payment method.
+
+    A live channel with no way to take a payment is a dead end for the customer
+    at checkout, so channel activation is gated behind this. Mirrors the
+    per-method required-fields rules used when saving payment methods.
+    """
+    from apps.accounts.views import PAYMENT_METHOD_REQUIRED_FIELDS
+
+    config = (
+        ChannelConfig.objects
+        .filter(organization=organization, channel='onboarding')
+        .only('settings')
+        .first()
+    )
+    raw = (config.settings if config else None) or {}
+    methods = (
+        raw.get('payment_methods')
+        or (raw.get('org_profile') or {}).get('payment_methods')
+        or []
+    )
+    payment_settings = raw.get('payment_settings') or {}
+    for method in methods:
+        key = str(method or '').strip().lower()
+        if not key:
+            continue
+        required = PAYMENT_METHOD_REQUIRED_FIELDS.get(key)
+        if required is None:
+            # Custom/free-text method with no known schema — trust it.
+            return True
+        if all(str(payment_settings.get(field) or '').strip() for field in required):
+            return True
+    return False
+
+
+def _guard_channel_activation(*, data: dict, config, organization) -> None:
+    """Reject turning a channel on when no payment method is configured yet."""
+    if not data.get('is_active'):
+        return
+    if config.is_active:
+        # Already active — don't block edits that merely keep it on.
+        return
+    if not _has_active_payment_method(organization):
+        raise ValidationError({
+            'is_active': (
+                'Configura primero un metodo de pago (Nequi, transferencia o efectivo) '
+                'con sus datos reales. Sin metodo de pago no puedes activar ningun canal.'
+            ),
+        })
 
 
 class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
@@ -995,6 +1059,7 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
         if 'webhook_url' in data:
             config.webhook_url = data['webhook_url']
         if 'is_active' in data:
+            _guard_channel_activation(data=data, config=config, organization=config.organization)
             config.is_active = data['is_active']
 
         config.credentials = credentials
@@ -1062,6 +1127,7 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
             if key in data:
                 config_settings[key] = data[key]
         if 'is_active' in data:
+            _guard_channel_activation(data=data, config=config, organization=config.organization)
             config.is_active = data['is_active']
             config_settings['install_status'] = 'configured' if data['is_active'] else 'not_installed'
 
@@ -1148,6 +1214,7 @@ class ChannelConfigViewSet(OrgScopedMixin, viewsets.ModelViewSet):
             if key in data:
                 config_settings[key] = data[key]
         if 'is_active' in data:
+            _guard_channel_activation(data=data, config=config, organization=config.organization)
             config.is_active = data['is_active']
             config_settings['install_status'] = 'configured' if data['is_active'] else 'not_installed'
 

@@ -256,6 +256,133 @@ class ResponseValidator:
         ]
         return '\n'.join(cleaned).strip()
 
+    # ── Sales drive enforcement ───────────────────────────────────────────────
+    # The prompt bans passive availability closers ("avisame si necesitas algo
+    # mas", "estoy aqui para ayudarte") but gpt-4o-mini reverts to assistant
+    # mode under pressure. This deterministic backstop strips those sentences
+    # and, if the reply is left without any forward motion, appends a
+    # stage-appropriate closing question.
+
+    _PASSIVE_CLOSER_PATTERNS = [
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (
+            r'\bav[ií]same\s+si\b',
+            r'\b(estoy|estar[eé]|quedo|seguir[eé])\s+(aqu[ií]\s+|por\s+aqu[ií]\s+)?'
+            r'(atent[oa]|pendiente|disponible|a\s+la\s+orden|a\s+tu\s+disposici[oó]n|'
+            r'para\s+(ayudarte|asistirte|servirte))',
+            r'\baqu[ií]\s+estoy\b',
+            r'\bestar[eé]\s+por\s+aqu[ií]\b',
+            r'\bno\s+dudes\s+en\b',
+            r'\bsolo\s+d[ií]melo\b',
+            r'\bencantad[oa]\s+de\s+(ayudarte|asistirte)\b',
+            r'\bcualquier\s+(cosa|duda|pregunta)\b[^.!?\n]*\b(me\s+(avisas|dices|escribes)|av[ií]same|dime)\b',
+            r'\b(estamos|estoy)\s+(a\s+la\s+orden|para\s+servirte)\b',
+            r'\balgo\s+m[aá]s\s+en\s+lo\s+que\s+(pueda|te\s+pueda|podamos)\s+ayudar',
+            r'\b(te\s+ayudo|puedo\s+ayudarte|necesitas\s+ayuda)\s+(con|en)\s+algo\s+m[aá]s\b',
+        )
+    ]
+
+    #: Acciones que el agente NO puede hacer y que el LLM a veces inventa
+    #: ("la agregué a tu lista de deseos", "te lo aparté", "te aviso cuando
+    #: vuelva"). El prompt ya lo prohíbe, pero esto es el backstop determinista:
+    #: la frase mentirosa se elimina y se reemplaza por un paso real (crear pedido).
+    _FAKE_ACTION_PATTERNS = [
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (
+            r'\blista\s+de\s+(deseos|favoritos)\b',
+            r'\bwishlist\b',
+            r'\b(te\s+l[oa]\s+)?(apart[eé]|reserv[eé])\b',
+            r'\b(qued[oó]|lo\s+dej[eé]|la\s+dej[eé])\s+(apartad|reservad)',
+            r'\bte\s+aviso\s+(cuando|apenas|en\s+cuanto|ni\s+bien|tan\s+pronto)\b',
+            r'\b(te\s+)?(env[ií]o|mando)\b[^.!?\n]*\b(cat[aá]logo|lista)\b[^.!?\n]*'
+            r'\b(correo|email|e-?mail)\b',
+        )
+    ]
+
+    #: Customer just said no / goodbye: politeness is correct there, pushing
+    #: a close after an explicit refusal is exactly the pressure we forbid.
+    _REFUSAL_PATTERNS = [
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (
+            r'^\s*(no|nop|nel|no\s+gracias|mejor\s+no|ya\s+no|as[ií]\s+no)\b',
+            r'\bdeja\s+as[ií]\b',
+            r'\bas[ií]\s+d[eé]j[ae]lo\b',
+            r'\b(luego|despu[eé]s|m[aá]s\s+tarde)\s+(te\s+)?(digo|aviso|escribo|miro|veo)\b',
+            r'\bsolo\s+(estoy\s+)?(mirando|viendo)\b',
+            r'^\s*(chao|chau|adi[oó]s|hasta\s+luego|gracias)\s*[!.\s]*$',
+        )
+    ]
+
+    @staticmethod
+    def enforce_sales_drive(
+        reply: str,
+        *,
+        user_message: str = '',
+        session_stage: str = '',
+        has_selected_product: bool = False,
+        strategy: str = '',
+        burst_separator: str = '|||',
+    ) -> str:
+        """
+        Strip passive-availability closers from an LLM reply and make sure it
+        still ends with forward motion (a question / next step). Deterministic;
+        only used on the LLM generation path — deterministic checkout replies
+        never go through here.
+        """
+        if not reply or strategy == 'ignore':
+            return reply
+        if any(pattern.search(user_message or '') for pattern in ResponseValidator._REFUSAL_PATTERNS):
+            return reply  # goodbye politeness is fine after an explicit no
+
+        had_separator = burst_separator in reply
+        parts = reply.split(burst_separator) if had_separator else [reply]
+
+        strip_patterns = (
+            ResponseValidator._PASSIVE_CLOSER_PATTERNS
+            + ResponseValidator._FAKE_ACTION_PATTERNS
+        )
+        cleaned_parts: list[str] = []
+        removed_any = False
+        for part in parts:
+            sentences = re.split(r'(?<=[.!?…])\s+', part.strip())
+            kept = []
+            for sentence in sentences:
+                if sentence.strip() and any(
+                    pattern.search(sentence) for pattern in strip_patterns
+                ):
+                    removed_any = True
+                    continue
+                kept.append(sentence)
+            cleaned = ' '.join(s for s in kept if s.strip()).strip()
+            if cleaned:
+                cleaned_parts.append(cleaned)
+
+        if not removed_any:
+            return reply
+        logger.info('Sales drive: removed passive/invented-action closer from reply')
+
+        remaining = ' '.join(cleaned_parts)
+        if '?' not in remaining:
+            cta = ResponseValidator._closing_cta(session_stage, has_selected_product)
+            if had_separator:
+                cleaned_parts.append(cta)
+            elif cleaned_parts:
+                cleaned_parts[-1] = f'{cleaned_parts[-1]} {cta}'.strip()
+            else:
+                cleaned_parts = [cta]
+        elif not cleaned_parts:
+            cleaned_parts = [ResponseValidator._closing_cta(session_stage, has_selected_product)]
+
+        return burst_separator.join(cleaned_parts) if had_separator else ' '.join(cleaned_parts)
+
+    @staticmethod
+    def _closing_cta(session_stage: str, has_selected_product: bool) -> str:
+        if session_stage == 'checkout':
+            return '¿Confirmamos tu pedido?'
+        if has_selected_product:
+            return '¿Te lo dejo pedido de una vez?'
+        return '¿Quieres que te muestre opciones?'
+
     @staticmethod
     def _fallback_reply(context: dict | None = None) -> str:
         """

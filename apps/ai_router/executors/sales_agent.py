@@ -27,6 +27,8 @@ from apps.ai_engine.sales.session import SessionManager
 from apps.ai_engine.sales.situation import SituationDetector
 from apps.ai_engine.sales.decision import DecisionEngine
 from apps.ai_engine.sales.policy import SalesPolicyEngine
+from apps.ai_engine.sales.qualification import needs_budget_qualification, apply_budget_qualification
+from apps.ai_engine.sales.budget import rank_by_budget
 from apps.ai_engine.sales.catalog import CatalogService
 from apps.ai_engine.sales.kb import KBService
 from apps.ai_engine.sales.examples import ExampleBank
@@ -38,8 +40,19 @@ from apps.ai_engine.sales.generator import ResponseGenerator
 from apps.ai_engine.sales.validator import ResponseValidator
 from apps.ai_engine.sales.contracts import ResponseContractEnforcer
 from apps.ai_engine.sales.handoff import HandoffHandler
+from apps.ai_engine.sales.brand import BrandVoice
 
 logger = logging.getLogger(__name__)
+
+
+class _StockRaceLost(Exception):
+    """Raised inside the checkout transaction when a locked re-read shows a
+    variant sold out between the pre-check and order creation."""
+
+    def __init__(self, titles, ids):
+        self.titles = titles
+        self.ids = ids
+        super().__init__('stock race lost')
 
 
 class SalesAgentExecutor(BaseExecutor):
@@ -50,7 +63,7 @@ class SalesAgentExecutor(BaseExecutor):
 
     def __init__(self) -> None:
         self._message_metadata: dict = {}
-        self._followup_message: str | None = None
+        self._followup_messages: list[dict] = []
         self._current_message = None
 
     def execute(
@@ -74,7 +87,7 @@ class SalesAgentExecutor(BaseExecutor):
             Reply string, or None if handoff initiated
         """
         self._message_metadata = {}
-        self._followup_message = None
+        self._followup_messages = []
         self._current_message = message
 
         try:
@@ -107,6 +120,17 @@ class SalesAgentExecutor(BaseExecutor):
             # ===== 4. Decide what to do (pure logic) =====
             action = DecisionEngine.decide(situation, session.stage)
             logger.info(f'Decision: {action}')
+
+            # ===== 4b. Qualification guard =====
+            # "Mandame foto y precio de cada una": don't run a product search
+            # (noisy or empty) or dump the catalog — ask budget first, same
+            # move a good human seller makes. Runs before context loading so
+            # no wasted catalog/semantic search happens for this turn.
+            if session.stage == 'discovery' and needs_budget_qualification(
+                message_text=message_text, session=session,
+            ):
+                action = apply_budget_qualification(action)
+                logger.info('Qualification guard: asking for budget before browsing catalog')
 
             # ===== 5a. Handoff check =====
             if action.get('requires_handoff'):
@@ -144,6 +168,10 @@ class SalesAgentExecutor(BaseExecutor):
             context['shipping_profile'] = self._load_shipping_profile(organization)
             context['payment_profile'] = self._load_payment_profile(organization)
 
+            # Remember what the agent proposed this turn so a bare affirmation
+            # next turn ("sii", "los dos") can bind those products to the cart.
+            self._stash_last_proposal(context, session=session)
+
             shipping_submission = self._extract_shipping_form_submission()
             if shipping_submission:
                 checkout_data = context.get('checkout_data') or {}
@@ -172,6 +200,47 @@ class SalesAgentExecutor(BaseExecutor):
             awaiting_order_confirmation = bool(checkout_data.get('awaiting_order_confirmation'))
             has_confirmed_order = bool(str(checkout_data.get('order_id') or '').strip())
 
+            # A store with no configured payment method must never create a
+            # paymentless ("Metodo de pago: No definido") order. This is the
+            # checkout-level safety net behind channel-activation gating, which
+            # does not retroactively disable channels that were already active.
+            if not has_confirmed_order:
+                attempting_order = bool(
+                    checkout_submission
+                    or (awaiting_order_confirmation and self._is_explicit_order_confirmation(message_text))
+                )
+                if attempting_order and not self._has_configured_payment_method(context):
+                    reply = HandoffHandler.escalate(
+                        conversation=conversation,
+                        session=session,
+                        organization=organization,
+                        reason='payment_not_configured',
+                    )
+                    self._message_metadata = {}
+                    return reply
+
+            # Re-shopping after a completed order: a fresh product selection must
+            # open a NEW order, not silently attach to (or be blocked by) the
+            # already-closed one. Clear the closed order's binding — kept as
+            # last_order_number for status questions — so the new cart is real.
+            if has_confirmed_order and context.get('selected_product_ids'):
+                last_order_number = str(checkout_data.get('order_number') or '').strip()
+                if last_order_number:
+                    checkout_data['last_order_number'] = last_order_number
+                # Empty strings (not pop) because session persistence merges via
+                # dict.update(), which cannot delete keys.
+                for key in ('order_id', 'order_number', 'payment_method', 'payment_method_label', 'payment_instructions'):
+                    checkout_data[key] = ''
+                checkout_data['order_total'] = 0
+                checkout_data['awaiting_order_confirmation'] = False
+                checkout_data['compact_checkout_form'] = {}
+                checkout_data['payment_reported_by_customer'] = False
+                context['checkout_data'] = checkout_data
+                has_confirmed_order = False
+                awaiting_order_confirmation = False
+                if session.stage != 'checkout':
+                    session.stage = 'considering'
+
             inferred_payment_method = self._infer_requested_payment_method(message_text)
             if inferred_payment_method and not has_confirmed_order:
                 compact_form = dict(checkout_data.get('compact_checkout_form') or {})
@@ -188,6 +257,16 @@ class SalesAgentExecutor(BaseExecutor):
                 if checkout_submission.get('city'):
                     context['shipping_city'] = checkout_submission.get('city')
 
+                # Persist to the Contact as soon as the form is submitted, not
+                # only once an order is confirmed — a customer who types their
+                # name/phone/address and then abandons checkout should not have
+                # that data thrown away.
+                self._upsert_checkout_contact(
+                    organization=organization,
+                    conversation=conversation,
+                    submission=checkout_submission,
+                )
+
                 can_auto_confirm_now = (
                     not has_confirmed_order
                     and not awaiting_order_confirmation
@@ -202,6 +281,15 @@ class SalesAgentExecutor(BaseExecutor):
                         context=context,
                         submission=checkout_submission,
                     )
+                    if order_result and order_result.get('stock_error'):
+                        return self._finalize_stock_error(
+                            session=session,
+                            situation=situation,
+                            action=action,
+                            context=context,
+                            message_text=message_text,
+                            order_result=order_result,
+                        )
                     if order_result:
                         return self._finalize_order_confirmation(
                             session=session,
@@ -263,6 +351,15 @@ class SalesAgentExecutor(BaseExecutor):
                     context=context,
                     submission=draft_submission,
                 )
+                if order_result and order_result.get('stock_error'):
+                    return self._finalize_stock_error(
+                        session=session,
+                        situation=situation,
+                        action=action,
+                        context=context,
+                        message_text=message_text,
+                        order_result=order_result,
+                    )
                 if order_result:
                     return self._finalize_order_confirmation(
                         session=session,
@@ -594,6 +691,18 @@ class SalesAgentExecutor(BaseExecutor):
 
             # ===== 7. Validate response =====
             reply = ResponseValidator.validate(reply, context)
+            # Deterministic backstop against assistant-mode passivity: strip
+            # "avisame si necesitas algo" closers and keep the turn moving
+            # toward the sale. Only the LLM path needs this — deterministic
+            # checkout replies are already CTA-driven.
+            reply = ResponseValidator.enforce_sales_drive(
+                reply,
+                user_message=message_text,
+                session_stage=str(session.stage or ''),
+                has_selected_product=bool(session.selected_products),
+                strategy=str(action.get('response_strategy') or ''),
+                burst_separator=BrandVoice.BURST_SEPARATOR,
+            )
             reply = ResponseContractEnforcer.enforce(
                 reply=reply,
                 session_stage=str(session.stage or ''),
@@ -620,7 +729,7 @@ class SalesAgentExecutor(BaseExecutor):
                 reply=reply,
             )
 
-            return reply
+            return self._split_burst_reply(reply)
 
         except Exception as e:
             logger.error(f'SalesAgent execution failed: {e}', exc_info=True)
@@ -630,8 +739,37 @@ class SalesAgentExecutor(BaseExecutor):
     def get_message_metadata(self) -> dict:
         return dict(self._message_metadata or {})
 
+    def get_followup_messages(self) -> list[dict]:
+        """Extra bot bubbles for this turn: burst parts and/or the post-order
+        'what happens next' message. Each item: {'text': str, 'kind': str}."""
+        return [dict(item) for item in (self._followup_messages or []) if item.get('text')]
+
     def get_followup_message(self) -> str | None:
-        return self._followup_message
+        """Backward-compatible single-message accessor (first extra bubble)."""
+        messages = self.get_followup_messages()
+        return messages[0]['text'] if messages else None
+
+    def _split_burst_reply(self, reply: str) -> str:
+        """
+        When the brand writes in bursts, the generator separates chat bubbles
+        with BrandVoice.BURST_SEPARATOR. Split them into real messages: the
+        first becomes the main reply, the rest are queued as followup bubbles.
+        Deterministic replies never contain the separator, so this is a no-op
+        for checkout/guard flows.
+        """
+        separator = BrandVoice.BURST_SEPARATOR
+        if not reply or separator not in reply:
+            return reply
+        parts = [part.strip() for part in reply.split(separator) if part.strip()]
+        if not parts:
+            return reply.replace(separator, ' ').strip()
+        # Cap total bubbles at 4; overflow folds into the last kept bubble so
+        # no generated text is silently dropped.
+        if len(parts) > 4:
+            parts = parts[:3] + [' '.join(parts[3:])]
+        for extra in parts[1:]:
+            self._followup_messages.append({'text': extra, 'kind': 'burst'})
+        return parts[0]
 
     def _load_context(
         self,
@@ -792,7 +930,11 @@ class SalesAgentExecutor(BaseExecutor):
                 if not resolution_meta.get('category'):
                     interpreted = str(resolution_meta.get('interpreted_query') or '').strip().lower()
                     if interpreted:
-                        stopwords = {'quiero', 'busco', 'necesito', 'me', 'interesa', 'de', 'del', 'la', 'el', 'los', 'las', 'un', 'una'}
+                        stopwords = {
+                            'quiero', 'quisiera', 'busco', 'necesito', 'me', 'interesa', 'agregar',
+                            'anadir', 'añadir', 'sumar', 'incluir', 'quisieran', 'de', 'del', 'la',
+                            'el', 'los', 'las', 'un', 'una', 'algo', 'mas', 'más', 'otro', 'otra',
+                        }
                         token = next((part for part in interpreted.split() if part and part not in stopwords), interpreted.split()[0])
                         resolution_meta['category'] = token[:100]
                         resolution['resolution'] = resolution_meta
@@ -800,15 +942,60 @@ class SalesAgentExecutor(BaseExecutor):
                 context['unavailable_products'] = resolution.get('unavailable_products', [])
                 context['product_resolution'] = resolution.get('resolution', {})
 
-                # Build recommendations if we have base products
+                # Budget-aware ordering: once the customer has stated a
+                # budget (qualification.py / budget.py), surface options that
+                # fit it first instead of whatever the keyword search
+                # happened to return first.
+                budget_ceiling = session.budget_max or session.budget_min
+                if budget_ceiling:
+                    context['recommended_products'] = rank_by_budget(
+                        context['recommended_products'], budget_ceiling,
+                    )
+
+                # Size-dependent products (rings, fitted clothing) can't be
+                # confirmed without a size the customer hasn't given yet —
+                # push them behind ready-to-recommend options, same move the
+                # rosado_joyeria transcript's human seller made ("anillos
+                # necesitan talla, mejor aretes o cadenas").
+                known_size = bool((session.checkout_data or {}).get('customer_size'))
+                if not known_size and any(
+                    p.get('requires_size') for p in context['recommended_products']
+                ):
+                    context['recommended_products'] = sorted(
+                        context['recommended_products'],
+                        key=lambda p: bool(p.get('requires_size')),
+                    )
+                    context['has_unsized_size_dependent_products'] = True
+
+                # Build recommendations if we have base products. The relation
+                # graph (combina/bundle/alternativas) is what lets the agent
+                # cross-sell and upsell instead of just answering the query, so
+                # feed all recommended products into the whitelist (deduped) and
+                # keep the structured relation set for the prompt guidance.
                 if session.selected_products and not context['product_resolution'].get('needs_confirmation'):
                     rec_set = RecommendationEngine.build(
                         base_products=session.selected_products,
                         session=session,
                         organization=organization,
                     )
+                    rec_products = []
                     if rec_set.get('primary'):
-                        context['recommended_products'].insert(0, rec_set['primary'])
+                        rec_products.append(rec_set['primary'])
+                    rec_products.extend(rec_set.get('bundle') or [])
+                    rec_products.extend(rec_set.get('alternatives') or [])
+                    existing_ids = {
+                        str((p or {}).get('id')) for p in context['recommended_products']
+                    }
+                    for rec_product in rec_products:
+                        rec_id = str((rec_product or {}).get('id'))
+                        if rec_id and rec_id not in existing_ids:
+                            context['recommended_products'].insert(0, rec_product)
+                            existing_ids.add(rec_id)
+                    if rec_products:
+                        context['relation_recommendations'] = {
+                            'bundle': rec_set.get('bundle') or [],
+                            'alternatives': rec_set.get('alternatives') or [],
+                        }
 
             if self._is_variant_question(message_text):
                 variant_info = self._resolve_variant_info(
@@ -833,14 +1020,24 @@ class SalesAgentExecutor(BaseExecutor):
 
             # Few-shot: how the brand actually replied in similar situations.
             # Cheap when the org has no approved examples (single indexed query).
-            sales_examples = ExampleBank.fetch(
+            example_details = ExampleBank.fetch_details(
                 organization=organization,
                 query=message_text,
                 stage=session.stage,
                 max_examples=2,
             )
-            if sales_examples:
-                context['sales_examples'] = sales_examples
+            if example_details['text']:
+                context['sales_examples'] = example_details['text']
+            if example_details['ids']:
+                # Outcome telemetry: remember which examples were in the prompt
+                # this conversation, so a confirmed order can reward them
+                # (OutcomeLearner.reward_used_examples). checkout_data persists
+                # via SessionManager.update at the end of the turn.
+                checkout_data = dict(session.checkout_data or {})
+                used_ids = {str(item) for item in (checkout_data.get('used_example_ids') or [])}
+                used_ids.update(example_details['ids'])
+                checkout_data['used_example_ids'] = sorted(used_ids)[:20]
+                session.checkout_data = checkout_data
 
             # Fetch promotions if requested
             if action.get('fetch_promotions'):
@@ -883,6 +1080,17 @@ class SalesAgentExecutor(BaseExecutor):
             return [product_id] if product_id else []
 
         message_text = str(getattr(message, 'content', '') or '').strip()
+
+        # Contextual affirmation ("sii", "si porfa", "los dos", "el primero") to
+        # the products the agent proposed on its previous turn. Without this, a
+        # customer who agrees conversationally never fills the cart, and hits a
+        # dead-end "carrito vacio" at checkout. Only fires when last turn actually
+        # pitched something (last_recommended_ids present), so a stray "si" to an
+        # unrelated question can never inject products.
+        affirmation_ids = self._resolve_affirmation_selection(message_text, session=session)
+        if affirmation_ids:
+            return affirmation_ids
+
         if not self._is_implicit_selection_intent(message_text):
             return []
 
@@ -939,8 +1147,124 @@ class SalesAgentExecutor(BaseExecutor):
             'agregalo',
             'agrÃ©galo',
             'agregar al carrito',
+            # Naming a product with an add/want intent must select it too, e.g.
+            # "quisiera agregar el collar murano", "quiero agregar la pulsera".
+            'quiero agregar',
+            'quisiera agregar',
+            'quisiera añadir',
+            'quisiera anadir',
+            'quiero añadir',
+            'quiero anadir',
+            'agregar el',
+            'agregar la',
+            'agrega el',
+            'agrega la',
+            'añadir el',
+            'añadir la',
+            'anadir el',
+            'anadir la',
+            'sumar el',
+            'sumar la',
         )
         return any(keyword in text for keyword in keywords)
+
+    def _stash_last_proposal(self, context: dict, *, session: SalesSession) -> None:
+        """Persist the products the agent is proposing this turn (minus anything
+        already in the cart) so a bare affirmation next turn can bind them.
+
+        Refreshed every turn — cleared when nothing is proposed — so a stale
+        pitch never leaks into an unrelated 'si'. A `browse` result (the agent
+        showing a catalog to pick from) is flagged so a bare 'si' won't
+        select-all; the customer still has to point at one ('el primero').
+        """
+        already = {str(item).strip() for item in (session.selected_products or []) if str(item).strip()}
+        already.update(str(item).strip() for item in (context.get('selected_product_ids') or []) if str(item).strip())
+
+        proposed: list[str] = []
+        for product in (context.get('recommended_products') or []):
+            product_id = str((product or {}).get('id') or '').strip()
+            if product_id and product_id not in already and product_id not in proposed:
+                proposed.append(product_id)
+
+        checkout_data = dict(context.get('checkout_data') or {})
+        checkout_data['last_recommended_ids'] = proposed[:3]
+        checkout_data['last_recommendation_browse'] = bool(
+            (context.get('product_resolution') or {}).get('match_type') == 'browse'
+        )
+        context['checkout_data'] = checkout_data
+
+    def _resolve_affirmation_selection(self, message_text: str, *, session: SalesSession) -> list[str]:
+        """Map a short affirmation to the agent's last proposal.
+
+        Returns product ids to add to the cart, or [] when the message is not a
+        clear affirmation or there is no pending proposal to bind to.
+        """
+        last_ids = [
+            str(item).strip()
+            for item in ((getattr(session, 'checkout_data', {}) or {}).get('last_recommended_ids') or [])
+            if str(item).strip()
+        ]
+        if not last_ids:
+            return []
+
+        text = (message_text or '').strip().lower().strip(' \t\n!¡?¿.,;:')
+        if not text or len(text.split()) > 5:
+            return []
+
+        # A different intent riding on "si" (a question, an objection, a topic
+        # switch) must never be read as "add to cart".
+        disqualifiers = (
+            'como', 'cuanto', 'cuánto', 'donde', 'dónde', 'cuando', 'cuándo',
+            'porque', 'por que', 'pago', 'pagar', 'precio', 'talla', 'color',
+            'envio', 'envío', 'no ', 'pero', 'espera', 'todavia', 'todavía',
+            'aun no', 'aún no', 'mejor no',
+        )
+        if any(token in text for token in disqualifiers):
+            return []
+
+        plural_tokens = ('los dos', 'las dos', 'ambos', 'ambas', 'esos', 'esas', 'todos', 'todas', 'todo', 'los tres')
+        wants_all = any(token in text for token in plural_tokens)
+
+        ordinal_pick = None
+        if any(token in text for token in ('primero', 'primera', 'el 1', 'la 1')):
+            ordinal_pick = 0
+        elif any(token in text for token in ('segundo', 'segunda', 'el 2', 'la 2')):
+            ordinal_pick = 1
+        elif any(token in text for token in ('tercero', 'tercera', 'el 3', 'la 3')):
+            ordinal_pick = 2
+
+        affirmations = {
+            'si', 'sí', 'sii', 'siii', 'siii', 'sip', 'sips', 'simon', 'claro', 'claro que si',
+            'claro que sí', 'dale', 'listo', 'ok', 'oki', 'okay', 'vale', 'de una', 'deuna',
+            'obvio', 'porfa', 'si porfa', 'sí porfa', 'si porfavor', 'porfavor', 'por favor',
+            'perfecto', 'genial', 'hagale', 'hágale', 'hagamoslo', 'eso', 'esa', 'ese',
+            'de once', 'por supuesto', 'me interesa', 'me interesan', 'lo quiero', 'los quiero',
+            'quiero', 'si quiero', 'sí quiero', 'si claro', 'sí claro', 'buenisimo', 'buenísimo',
+            'me encanta', 'me encantan', 'de acuerdo',
+        }
+        first_word = text.split()[0]
+        is_affirmation = (
+            text in affirmations
+            or wants_all
+            or ordinal_pick is not None
+            or first_word in {'si', 'sí', 'sii', 'claro', 'dale', 'listo', 'ok', 'vale', 'perfecto', 'obvio', 'quiero'}
+        )
+        if not is_affirmation:
+            return []
+
+        if ordinal_pick is not None:
+            return last_ids[ordinal_pick:ordinal_pick + 1] or last_ids[:1]
+        if wants_all:
+            return last_ids[:3]
+
+        # Bare "si" to a catalog browse is too ambiguous to select-all; let the
+        # customer point at one instead.
+        if (getattr(session, 'checkout_data', {}) or {}).get('last_recommendation_browse') and len(last_ids) > 1:
+            return []
+
+        # A focused pitch (one product, or a small complementary set the agent
+        # bundled) → bind everything it proposed.
+        return last_ids[:3]
 
     @staticmethod
     def _is_variant_question(message_text: str) -> bool:
@@ -1022,6 +1346,24 @@ class SalesAgentExecutor(BaseExecutor):
             'cÃ³mo lo pago',
             'como pago',
             'cÃ³mo pago',
+            'como te pago',
+            'como puedo pagar',
+            'como hago para pagar',
+            'como hago el pago',
+            'como realizo el pago',
+            'como hago para el pago',
+            'como procedo con el pago',
+            'como procedo al pago',
+            'quiero pagar',
+            'listo para pagar',
+            'formas de pago',
+            'forma de pago',
+            'medios de pago',
+            'medio de pago',
+            'metodos de pago',
+            'metodo de pago',
+            'mÃ©todos de pago',
+            'mÃ©todo de pago',
             'que cuenta',
             'quÃ© cuenta',
             'numero de cuenta',
@@ -1064,6 +1406,19 @@ class SalesAgentExecutor(BaseExecutor):
         if 'efectivo' in text:
             return 'efectivo'
         return ''
+
+    @staticmethod
+    def _has_configured_payment_method(context: dict) -> bool:
+        """True when the store has at least one usable payment method loaded.
+
+        `payment_profile['methods']` only ever contains fully-configured methods
+        (see `_load_payment_profile`), so a non-empty list means the store can
+        actually take a payment.
+        """
+        return bool([
+            item for item in ((context.get('payment_profile') or {}).get('methods') or [])
+            if isinstance(item, dict)
+        ])
 
     @staticmethod
     def _is_uncertain_payment_instructions(instructions: str) -> bool:
@@ -1216,39 +1571,50 @@ class SalesAgentExecutor(BaseExecutor):
         if not self._asked_for_payment_details(message_text):
             return '', False
 
-        selected_method = str(checkout_data.get('payment_method') or '').strip().lower()
-        inferred_method = self._infer_requested_payment_method(message_text)
-        effective_method = inferred_method or selected_method
-        if effective_method and effective_method != 'transferencia_bancaria':
-            return '', False
+        order_number = str(checkout_data.get('order_number') or '').strip()
+        order_ref = f' #{order_number}' if order_number else ''
+        order_method = str(checkout_data.get('payment_method') or '').strip().lower()
 
-        selected_label = str(checkout_data.get('payment_method_label') or 'transferencia bancaria').strip()
+        # Cash on delivery: there is nothing to transfer up front.
+        if order_method == 'efectivo':
+            return (
+                f'Tu pedido{order_ref} es con pago en efectivo, asi que no necesitas transferir nada por adelantado: '
+                'pagas al momento de recibir. Cualquier otra duda, aqui estoy.'
+            ), False
+
+        # Deliver the configured account details for whatever method the order
+        # actually uses (nequi, transferencia, etc.) — never improvise them.
+        selected_label = str(checkout_data.get('payment_method_label') or '').strip()
         instructions = str(checkout_data.get('payment_instructions') or '').strip()
-        if not instructions:
+        if not instructions or not selected_label:
             methods = [
                 item for item in ((context.get('payment_profile') or {}).get('methods') or [])
                 if isinstance(item, dict)
             ]
-            transfer_method = next(
+            method_match = next(
                 (
                     item for item in methods
-                    if str(item.get('id') or '').strip().lower() == 'transferencia_bancaria'
+                    if str(item.get('id') or '').strip().lower() == order_method
                 ),
                 {},
             )
-            instructions = str(transfer_method.get('instructions') or '').strip()
+            instructions = instructions or str(method_match.get('instructions') or '').strip()
+            selected_label = selected_label or str(method_match.get('label') or '').strip()
 
-        order_number = str(checkout_data.get('order_number') or '').strip()
-        order_ref = f' #{order_number}' if order_number else ''
+        label = selected_label or 'el metodo elegido'
         if instructions:
+            proof_line = (
+                ' Cuando hagas el pago, enviame una captura del comprobante y validamos.'
+                if order_method in ('transferencia_bancaria', 'nequi')
+                else ''
+            )
             return (
-                f'Claro. Tu pedido{order_ref} esta con {selected_label}. '
-                f'Datos para pagar: {instructions}. '
-                'Cuando hagas la transferencia, enviame una captura de pantalla del comprobante y validamos el pago.'
+                f'Claro. Tu pedido{order_ref} esta con {label}. '
+                f'Datos para pagar: {instructions}.{proof_line}'
             ), False
 
         return (
-            f'Tu pedido{order_ref} esta por transferencia bancaria, pero no tengo la cuenta configurada ahora mismo. '
+            f'Tu pedido{order_ref} esta con {label}, pero no tengo los datos de pago configurados ahora mismo. '
             'Te conecto con soporte para compartirte los datos exactos de pago.'
         ), True
 
@@ -1484,6 +1850,67 @@ class SalesAgentExecutor(BaseExecutor):
         initial_values = payload.get('initial_values') or {}
         return all(str((initial_values or {}).get(field) or '').strip() for field in required_fields)
 
+    def _finalize_stock_error(
+        self,
+        *,
+        session: SalesSession,
+        situation: str,
+        action: dict,
+        context: dict,
+        message_text: str,
+        order_result: dict,
+    ) -> str:
+        """A product sold out at confirmation time. Tell the customer honestly,
+        drop the sold-out items from the cart, reopen the sale so the agent can
+        offer an in-stock alternative, and never leave a phantom order behind."""
+        sold_out_titles = [str(t).strip() for t in (order_result.get('sold_out_titles') or []) if str(t).strip()]
+        sold_out_ids = {str(i) for i in (order_result.get('sold_out_ids') or [])}
+
+        # Remove the sold-out products from the selection so the next turn
+        # doesn't try to buy them again.
+        if sold_out_ids:
+            session.selected_products = [
+                pid for pid in (session.selected_products or [])
+                if str(pid) not in sold_out_ids
+            ]
+
+        checkout_data = dict(context.get('checkout_data') or {})
+        checkout_data.pop('awaiting_order_confirmation', None)
+        checkout_data.pop('awaiting_order_confirmation_at', None)
+        checkout_data['compact_checkout_form'] = {}
+        context['checkout_data'] = checkout_data
+        if session.stage == 'checkout':
+            session.stage = 'considering'
+
+        if len(sold_out_titles) == 1:
+            names = sold_out_titles[0]
+        elif sold_out_titles:
+            names = ', '.join(sold_out_titles[:-1]) + f' y {sold_out_titles[-1]}'
+        else:
+            names = 'ese producto'
+        reply = (
+            f'Lo siento, {names} se agotó justo ahora y no puedo confirmar el pedido. '
+            'Si quieres, te muestro una opción similar disponible.'
+        )
+        reply = ResponseValidator.validate(reply, context)
+        self._message_metadata = {}
+        self._merge_session_signals(
+            context=context,
+            signals=SessionManager.extract_session_signals(
+                user_message=message_text,
+                action=action,
+                context=context,
+            ),
+        )
+        SessionManager.update(
+            session=session,
+            situation=situation,
+            action=action,
+            context=context,
+            reply=reply,
+        )
+        return reply
+
     def _finalize_order_confirmation(
         self,
         *,
@@ -1506,8 +1933,18 @@ class SalesAgentExecutor(BaseExecutor):
         checkout_data['order_completed_at'] = timezone.now().isoformat()
         context['checkout_data'] = checkout_data
         context['order_completed'] = True
-        self._message_metadata = {}
-        self._followup_message = self._build_order_followup_message(order_result=order_result)
+        # Structural signal that the order now exists. The client locks the cart
+        # off this flag instead of pattern-matching the agent's confirmation
+        # wording, so brand-voice variation can never leave a live cart editable.
+        self._message_metadata = {
+            'ui_payload': {
+                'type': 'order_created',
+                'order_number': str(order_result.get('order_number') or ''),
+            }
+        }
+        order_followup = self._build_order_followup_message(order_result=order_result)
+        if order_followup:
+            self._followup_messages.append({'text': order_followup, 'kind': 'order_followup'})
 
         final_action = dict(action)
         final_action.pop('checkout_step', None)
@@ -1526,6 +1963,17 @@ class SalesAgentExecutor(BaseExecutor):
             context=context,
             reply=order_result['message'],
         )
+
+        # Outcome learning: a real order marks this conversation's exchanges
+        # as winning material and rewards the examples that were in the
+        # prompt. Deterministic, PII-filtered, and never blocks the checkout.
+        try:
+            from apps.ai_engine.sales.outcome_learning import OutcomeLearner
+            OutcomeLearner.learn_from_order(session=session, order_id=order_result['order_id'])
+            OutcomeLearner.reward_used_examples(session=session)
+        except Exception:
+            logger.warning('outcome_learning_failed', exc_info=True)
+
         return order_result['message']
 
     def _extract_removed_product_id(self) -> str:
@@ -1654,6 +2102,136 @@ class SalesAgentExecutor(BaseExecutor):
             if key in allowed_keys and value is not None and str(value).strip()
         }
 
+    def _upsert_checkout_contact(
+        self,
+        *,
+        organization,
+        conversation: Conversation,
+        submission: dict,
+    ):
+        """Persist a compact-checkout form submission onto the Contact record.
+
+        Called both as soon as the customer submits the form (so partial/
+        abandoned checkouts are still captured) and again when an order is
+        created from it. The address fields have no dedicated columns on
+        Contact, so they're kept in metadata['shipping_address'].
+        """
+        try:
+            from apps.accounts.models import Contact
+        except Exception:
+            return None
+
+        full_name = str(submission.get('full_name') or '').strip()
+        email = str(submission.get('email') or '').strip().lower()
+        phone = str(submission.get('phone') or '').strip()
+        if not (full_name or email or phone):
+            return None
+
+        first_name, _, last_name = full_name.partition(' ') if full_name else ('', '', '')
+
+        contact_lookup = {}
+        if email:
+            contact_lookup['email'] = email
+        elif phone:
+            contact_lookup['telefono'] = phone
+
+        contact_defaults = {
+            'nombre': first_name or 'Cliente',
+            'apellido': last_name,
+            'email': email,
+            'telefono': phone,
+            'canal': conversation.canal or 'app',
+            'tipo': 'cliente',
+        }
+
+        if contact_lookup:
+            contact, created = Contact.objects.get_or_create(
+                organization=organization,
+                defaults=contact_defaults,
+                **contact_lookup,
+            )
+        else:
+            # No email/phone yet to key off of — fall back to the
+            # conversation's existing contact so a partially-filled form
+            # (e.g. only full_name typed so far) still gets recorded.
+            contact = conversation.contact
+            created = False
+            if contact is None:
+                contact = Contact.objects.create(organization=organization, **contact_defaults)
+                created = True
+
+        patch_fields: list[str] = []
+        if not created:
+            if first_name and contact.nombre != first_name:
+                contact.nombre = first_name
+                patch_fields.append('nombre')
+            if last_name and contact.apellido != last_name:
+                contact.apellido = last_name
+                patch_fields.append('apellido')
+            if email and contact.email != email:
+                contact.email = email
+                patch_fields.append('email')
+            if phone and contact.telefono != phone:
+                contact.telefono = phone
+                patch_fields.append('telefono')
+
+        address_fields = {
+            key: str(submission.get(key) or '').strip()
+            for key in ('address_line1', 'address_line2', 'city', 'postal_code', 'reference')
+            if str(submission.get(key) or '').strip()
+        }
+        payment_method = str(submission.get('payment_method') or '').strip()
+
+        metadata = dict(contact.metadata or {})
+        metadata_changed = False
+        if address_fields:
+            shipping_address = dict(metadata.get('shipping_address') or {})
+            if shipping_address != {**shipping_address, **address_fields}:
+                shipping_address.update(address_fields)
+                metadata['shipping_address'] = shipping_address
+                metadata_changed = True
+        if payment_method and metadata.get('preferred_payment_method') != payment_method:
+            metadata['preferred_payment_method'] = payment_method
+            metadata_changed = True
+        if metadata_changed:
+            contact.metadata = metadata
+            patch_fields.append('metadata')
+
+        if patch_fields:
+            contact.save(update_fields=[*dict.fromkeys(patch_fields), 'updated_at'])
+
+        # The conversation may still point at an anonymous placeholder
+        # contact created when the widget session started (no email/phone
+        # known yet). Re-point it to the identity resolved from checkout so
+        # a future conversation from the same phone/email can find this
+        # order in CustomerHistoryService.
+        if conversation.contact_id != contact.id:
+            conversation.contact = contact
+            conversation.save(update_fields=['contact', 'updated_at'])
+
+        return contact
+
+    @staticmethod
+    def _variant_is_stock_tracked(product) -> bool:
+        """Physical goods (and hybrids that ship) consume inventory; pure
+        services/digital do not. Mirrors CatalogService._enrich_product."""
+        is_service_like = product.offer_type in ('service', 'hybrid') and not product.requires_shipping
+        return not is_service_like
+
+    def _pick_orderable_variant(self, product):
+        """Cheapest variant that can actually be sold right now. For stock-
+        tracked products that means available (stock - reserved) > 0; returns
+        None when everything is out of stock so checkout can stop."""
+        variants = sorted(list(product.variants.all()), key=lambda item: item.price)
+        if not variants:
+            return None
+        if not self._variant_is_stock_tracked(product):
+            return variants[0]
+        for variant in variants:
+            if max((variant.stock or 0) - (variant.reserved or 0), 0) > 0:
+                return variant
+        return None
+
     def _create_guest_checkout_order(
         self,
         *,
@@ -1664,7 +2242,6 @@ class SalesAgentExecutor(BaseExecutor):
         submission: dict,
     ) -> dict | None:
         try:
-            from apps.accounts.models import Contact
             from apps.ecommerce.models import Order, Product
             from apps.ecommerce.promotion_engine import PromotionEngine
         except Exception:
@@ -1687,24 +2264,44 @@ class SalesAgentExecutor(BaseExecutor):
         items: list[dict] = []
         total = Decimal('0')
         requires_shipping = False
+        # variant chosen per line, decremented after the order is created.
+        chosen_variants: list = []
+        sold_out_titles: list[str] = []
+        sold_out_ids: list[str] = []
         for product_id in selected_ids:
             product = product_map.get(product_id)
             if not product:
                 continue
-            variants = sorted(list(product.variants.all()), key=lambda item: item.price)
-            variant = variants[0] if variants else None
-            unit_price = Decimal(str(variant.price if variant and variant.price is not None else 0))
+            variant = self._pick_orderable_variant(product)
+            if variant is None:
+                # Product went out of stock between recommendation and checkout —
+                # never create a paymentless promise for something we can't ship.
+                sold_out_titles.append(product.title)
+                sold_out_ids.append(str(product.id))
+                continue
+            unit_price = Decimal(str(variant.price if variant.price is not None else 0))
             items.append({
                 'product_id': str(product.id),
-                'sku': variant.sku if variant and variant.sku else f'prd-{str(product.id)[:8]}',
+                'sku': variant.sku if variant.sku else f'prd-{str(product.id)[:8]}',
                 'qty': 1,
                 'unit_price': float(unit_price),
                 'title': product.title,
                 'offer_type': product.offer_type,
                 'category': product.category or '',
             })
+            if self._variant_is_stock_tracked(product):
+                chosen_variants.append(variant)
             total += unit_price
             requires_shipping = requires_shipping or bool(product.requires_shipping)
+
+        # If any selected product sold out, stop before creating the order so
+        # the agent can tell the customer and offer an in-stock alternative.
+        if sold_out_titles:
+            return {
+                'stock_error': True,
+                'sold_out_titles': sold_out_titles,
+                'sold_out_ids': sold_out_ids,
+            }
 
         if not items:
             return None
@@ -1735,56 +2332,16 @@ class SalesAgentExecutor(BaseExecutor):
             return None
 
         full_name = str(submission.get('full_name') or '').strip() or 'Cliente'
-        first_name, _, last_name = full_name.partition(' ')
         email = str(submission.get('email') or '').strip().lower()
         phone = str(submission.get('phone') or '').strip()
 
-        contact_lookup = {}
-        if email:
-            contact_lookup['email'] = email
-        elif phone:
-            contact_lookup['telefono'] = phone
-
-        contact_defaults = {
-            'nombre': first_name or 'Cliente',
-            'apellido': last_name,
-            'email': email,
-            'telefono': phone,
-            'canal': conversation.canal or 'app',
-            'tipo': 'cliente',
-        }
-        if contact_lookup:
-            contact, _ = Contact.objects.get_or_create(
-                organization=organization,
-                defaults=contact_defaults,
-                **contact_lookup,
-            )
-            patch_fields = []
-            if not contact.nombre and first_name:
-                contact.nombre = first_name
-                patch_fields.append('nombre')
-            if not contact.apellido and last_name:
-                contact.apellido = last_name
-                patch_fields.append('apellido')
-            if email and not contact.email:
-                contact.email = email
-                patch_fields.append('email')
-            if phone and not contact.telefono:
-                contact.telefono = phone
-                patch_fields.append('telefono')
-            if patch_fields:
-                contact.save(update_fields=[*patch_fields, 'updated_at'])
-        else:
-            contact = Contact.objects.create(organization=organization, **contact_defaults)
-
-        # The conversation may still point at an anonymous placeholder
-        # contact created when the widget session started (no email/phone
-        # known yet). Re-point it to the identity resolved from checkout so
-        # a future conversation from the same phone/email can find this
-        # order in CustomerHistoryService.
-        if conversation.contact_id != contact.id:
-            conversation.contact = contact
-            conversation.save(update_fields=['contact', 'updated_at'])
+        contact = self._upsert_checkout_contact(
+            organization=organization,
+            conversation=conversation,
+            submission=submission,
+        )
+        if contact is None:
+            return None
 
         shipping_data = {
             'full_name': full_name,
@@ -1813,33 +2370,71 @@ class SalesAgentExecutor(BaseExecutor):
         )
         discounted_total = Decimal(str(pricing.get('total') or total))
 
-        order = Order.objects.create(
-            organization=organization,
-            contact=contact,
-            customer_name=full_name,
-            order_kind='purchase',
-            channel='app',
-            status='new',
-            items=items,
-            total=discounted_total,
-            currency='COP',
-            payment_method=selected_payment_method,
-            conversation=conversation,
-            fulfillment_summary={
-                'checkout_source': 'appchat_compact',
-                'requires_shipping': requires_shipping,
-                'form_submission': {k: v for k, v in submission.items() if v not in (None, '')},
-                'shipping': shipping_data,
-                'pricing': pricing,
-                'payment': {
-                    'method': selected_payment_method,
-                    'method_label': payment_method_label,
-                    'instructions': payment_instructions,
-                    'status': 'pending_confirmation',
-                },
-            },
-            notes='Pedido creado desde flujo de checkout compacto en chat.',
-        )
+        # Create the order and decrement stock atomically. The chosen variants
+        # are re-read under a row lock so two customers racing for the last unit
+        # can't both succeed; if the lock reveals it just sold out, roll back and
+        # surface it as a stock error like the pre-check above.
+        from django.db import transaction
+        from apps.ecommerce.models import ProductVariant, InventoryMovement
+
+        try:
+            with transaction.atomic():
+                locked = {
+                    str(v.id): v for v in ProductVariant.objects.select_for_update().filter(
+                        id__in=[variant.id for variant in chosen_variants]
+                    )
+                }
+                raced_out = [
+                    variant for variant in chosen_variants
+                    if max((locked[str(variant.id)].stock or 0) - (locked[str(variant.id)].reserved or 0), 0) <= 0
+                ]
+                if raced_out:
+                    raise _StockRaceLost(
+                        [v.product.title for v in raced_out],
+                        [str(v.product_id) for v in raced_out],
+                    )
+
+                order = Order.objects.create(
+                    organization=organization,
+                    contact=contact,
+                    customer_name=full_name,
+                    order_kind='purchase',
+                    channel='app',
+                    status='new',
+                    items=items,
+                    total=discounted_total,
+                    currency='COP',
+                    payment_method=selected_payment_method,
+                    conversation=conversation,
+                    fulfillment_summary={
+                        'checkout_source': 'appchat_compact',
+                        'requires_shipping': requires_shipping,
+                        'form_submission': {k: v for k, v in submission.items() if v not in (None, '')},
+                        'shipping': shipping_data,
+                        'pricing': pricing,
+                        'payment': {
+                            'method': selected_payment_method,
+                            'method_label': payment_method_label,
+                            'instructions': payment_instructions,
+                            'status': 'pending_confirmation',
+                        },
+                    },
+                    notes='Pedido creado desde flujo de checkout compacto en chat.',
+                )
+                for variant in chosen_variants:
+                    locked_variant = locked[str(variant.id)]
+                    locked_variant.stock = max((locked_variant.stock or 0) - 1, 0)
+                    locked_variant.save(update_fields=['stock'])
+                    InventoryMovement.objects.create(
+                        organization=organization,
+                        variant=locked_variant,
+                        sku=locked_variant.sku,
+                        type='out',
+                        quantity=1,
+                        reason=f'Pedido en chat #{str(order.id).split("-")[0].upper()}',
+                    )
+        except _StockRaceLost as exc:
+            return {'stock_error': True, 'sold_out_titles': exc.titles, 'sold_out_ids': exc.ids}
         short_order = str(order.id).split('-')[0].upper()
         payment_line = f'Metodo de pago: {payment_method_label}.'
         instruction_line = f' Instrucciones: {payment_instructions}' if payment_instructions else ''
@@ -2150,13 +2745,17 @@ class SalesAgentExecutor(BaseExecutor):
         explicit_browse = self._is_explicit_product_browse(message_text)
         needs_confirmation = bool(resolution.get('needs_confirmation'))
         replacement_flow = cart_event.get('type') == 'item_removed'
+        photo_request = self._is_photo_request_message(message_text)
         low_signal_followup = self._is_low_signal_followup(message_text)
         product_seeking_message = self._is_product_seeking_message(message_text)
 
-        if low_signal_followup and not explicit_browse and not needs_confirmation and not replacement_flow:
+        if low_signal_followup and not explicit_browse and not needs_confirmation and not replacement_flow and not photo_request:
             return False
 
-        if explicit_browse or needs_confirmation or replacement_flow:
+        # A photo request always re-shows the card (with its image) even if
+        # the same product was just shown or we're inside the repeat-card
+        # cooldown — the customer explicitly asked to see it again.
+        if explicit_browse or needs_confirmation or replacement_flow or photo_request:
             return True
 
         checkout_data = dict(session.checkout_data or {})
@@ -2206,6 +2805,23 @@ class SalesAgentExecutor(BaseExecutor):
             'parecidos',
             'ver productos',
             'productos disponibles',
+        ]
+        return any(keyword in message_text for keyword in keywords)
+
+    @staticmethod
+    def _is_photo_request_message(message_text: str) -> bool:
+        if not message_text:
+            return False
+        keywords = [
+            'foto',
+            'imagen',
+            'imágen',
+            'como se ve',
+            'cómo se ve',
+            'como luce',
+            'cómo luce',
+            'que aspecto tiene',
+            'qué aspecto tiene',
         ]
         return any(keyword in message_text for keyword in keywords)
 
@@ -2432,6 +3048,11 @@ class SalesAgentExecutor(BaseExecutor):
             'initial_values': compact_form,
             'required_fields': required_fields,
             'payment_options': payment_options,
+            # Structural signal (not regex on the reply text): True only on the
+            # dedicated "review and confirm" turn. Drives the client's explicit
+            # "Confirmar pedido" affordance so the agent can phrase its message
+            # however it wants without breaking checkout.
+            'awaiting_confirmation': bool(current_checkout.get('awaiting_order_confirmation')),
         }
 
     def _build_shipping_form_payload(self, context: dict, *, session: SalesSession, action: dict) -> dict | None:

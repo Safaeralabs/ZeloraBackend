@@ -10,6 +10,8 @@ from .views import (
     AIInsightViewSet,
     AIPerformanceViewSet,
     SalesSessionMetricsView,
+    VoiceImportPreviewView,
+    VoiceImportApplyView,
 )
 
 
@@ -25,5 +27,7 @@ urlpatterns = [
     path('intent/', IntentDetectView.as_view(), name='ai-intent'),
     path('qa-score/', QAScoreView.as_view(), name='ai-qa-score'),
     path('sales-sessions/metrics/', SalesSessionMetricsView.as_view(), name='ai-sales-session-metrics'),
+    path('voice-import/preview/', VoiceImportPreviewView.as_view(), name='ai-voice-import-preview'),
+    path('voice-import/apply/', VoiceImportApplyView.as_view(), name='ai-voice-import-apply'),
     path('', include(router.urls)),
 ]

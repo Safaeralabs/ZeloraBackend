@@ -61,6 +61,24 @@ def setup_periodic_tasks(sender, **kwargs):
         name='sales-followup-sweep',
     )
 
+    # Brand voice refresh — every Monday at 04:00: recompiles each org's
+    # voice_card from real human inbox messages and decays stale examples
+    from apps.ai_engine.tasks import refresh_brand_voices_task
+    sender.add_periodic_task(
+        crontab(hour=4, minute=0, day_of_week=1),
+        refresh_brand_voices_task.s(),
+        name='brand-voice-refresh-weekly',
+    )
+
+    # Billing cycle reset — daily at 05:00: rolls the period for subscriptions
+    # whose period_end has passed (resets conversation + overage counters).
+    from apps.billing.tasks import reset_billing_cycles_task
+    sender.add_periodic_task(
+        crontab(hour=5, minute=0),
+        reset_billing_cycles_task.s(),
+        name='billing-cycle-reset-daily',
+    )
+
 
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):
